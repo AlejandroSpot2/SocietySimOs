@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+@theme {
+  --font-mono: "JetBrains Mono", "Courier New", Courier, monospace;
+}
+
+body {
+  background-color: #050505;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 8px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(0, 255, 0, 0.05);
+  border-left: 1px solid rgba(0, 255, 0, 0.2);
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(0, 255, 0, 0.3);
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 255, 0, 0.5);
+}
+
+/* 3D Utilities */
+.preserve-3d {
+  transform-style: preserve-3d;
+}
+
+.perspective-1200 {
+  perspective: 1200px;
+}
+
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(200%); }
+}
+
+.animate-scanline {
+  animation: scanline 3s linear infinite;
+}

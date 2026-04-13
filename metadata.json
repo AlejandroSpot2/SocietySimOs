@@ -1,0 +1,5 @@
+{
+  "name": "Society Sim OS",
+  "description": "A terminal-esque prototype app where different LLM personas interact with each other to discuss and react to a new product, acting as a pre-market study simulation.",
+  "requestFramePermissions": []
+}
