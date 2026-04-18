@@ -341,6 +341,8 @@ export default function App() {
   const [isSimulating, setIsSimulating] = useState(false);
   const [isSyncingPersonas, setIsSyncingPersonas] = useState(false);
   const [isSyncingGroups, setIsSyncingGroups] = useState(false);
+  const [icpPersonas, setIcpPersonas] = useState<PersonaState[]>([]);
+  const [isGeneratingIcp, setIsGeneratingIcp] = useState(false);
 
   const terminalRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -711,131 +713,59 @@ export default function App() {
     pushSystemMessage('Simulation halted by user.');
   };
 
-  const startSimulation = async () => {
-    if (!health?.configured) {
-      pushSystemMessage('MINDS_API_KEY is missing. Configure the server before running simulations.');
-      setActiveTab('settings');
-      return;
-    }
-
-    if (!selectedProduct || !selectedGroup) {
-      pushSystemMessage('Select a product and group before running the simulation.');
-      return;
-    }
-
-    if (selectedGroup.personaIds.length === 0) {
-      pushSystemMessage('Selected group has no minds. Add at least one persona to continue.');
-      setActiveTab('groups');
-      return;
-    }
-
-    if (selectedGroup.personaIds.length > maxPanelMinds) {
-      pushSystemMessage(`Selected group exceeds the ${maxPanelMinds}-mind limit.`);
-      setActiveTab('groups');
-      return;
-    }
-
+  const runSimulationWithPersonas = async (
+    personasToUse: PersonaState[],
+    product: Product,
+  ) => {
     const controller = new AbortController();
     abortRef.current = controller;
     setIsSimulating(true);
-    setMetrics([]);
-    setMessages([
-      createMessage({
-        senderId: 'system',
-        senderName: 'SYSTEM',
-        text: `INITIALIZING GROUP RUN\nPRODUCT: ${selectedProduct.name}\nCATEGORY: ${selectedProduct.category}\nGROUP: ${selectedGroup.name}`,
-        isSystem: true,
-      }),
-    ]);
-    setActiveTab('simulation');
+
+    const log = (text: string) =>
+      setMessages((current) =>
+        upsertMessages(current, createMessage({ senderId: 'system', senderName: 'SYSTEM', text, isSystem: true })),
+      );
 
     try {
-      const syncedPersonas = await syncPersonas(personas);
-      const syncedGroups = await syncGroups(groups, syncedPersonas);
-      const activeGroup = syncedGroups.find((group) => group.id === selectedGroup.id);
-      if (!activeGroup) {
-        throw new Error('Selected group could not be resolved after sync.');
-      }
+      const group: Group = {
+        id: 'icp-group-' + Date.now(),
+        name: product.name + ' Focus Group',
+        personaIds: personasToUse.map((p) => p.id),
+      };
 
-      const activePersonas = activeGroup.personaIds
-        .map((personaId) => syncedPersonas.find((persona) => persona.id === personaId))
-        .filter(Boolean) as PersonaState[];
-      const transcriptLines: string[] = [];
+      log(`Running ${personasToUse.length} personas for "${product.name}"...`);
 
       const response = await fetch('/api/simulations/panel-run', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'text/event-stream',
-        },
-        body: JSON.stringify({
-          group: activeGroup,
-          product: selectedProduct,
-          personas: activePersonas.map((persona) => ({
-            id: persona.id,
-            name: persona.name,
-            remote: persona.remote,
-          })),
-        }),
+        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+        body: JSON.stringify({ group, product, personas: personasToUse }),
         signal: controller.signal,
       });
 
       if (!response.ok) {
-        const message = await response.text();
-        throw new Error(message || `Simulation run failed with status ${response.status}`);
+        const msg = await response.text();
+        throw new Error(msg || `Simulation failed ${response.status}`);
       }
+
+      const transcriptLines: string[] = [];
 
       await readStreamEvents(response, (event) => {
         if (event.type === 'mind_message') {
-          const senderName =
-            event.mindName ||
-            activePersonas.find((persona) => persona.id === event.mindId)?.name ||
-            'Mind';
-          const senderId = event.mindId || senderName.toLowerCase().replace(/\s+/g, '_');
-          const text = event.text || '';
+          const text = event.text ?? '';
+          const senderName = event.mindName ?? 'Mind';
+          const senderId = event.mindId ?? senderName.toLowerCase().replace(/\s+/g, '_');
           transcriptLines.push(`${senderName}: ${text}`);
           setMessages((current) =>
-            upsertMessages(
-              current,
-              createMessage({
-                senderId,
-                senderName,
-                text,
-              }),
-            ),
+            upsertMessages(current, createMessage({ senderId, senderName, text })),
           );
-          return;
-        }
-
-        if (event.type === 'error') {
-          setMessages((current) =>
-            upsertMessages(
-              current,
-              createMessage({
-                senderId: 'system',
-                senderName: 'RUN_ERROR',
-                text: event.text || stringifyRaw(event.raw),
-                isSystem: true,
-              }),
-            ),
-          );
-          return;
-        }
-
-        if (event.type === 'system' && event.text) {
-          setMessages((current) =>
-            upsertMessages(
-              current,
-              createMessage({
-                senderId: 'system',
-                senderName: 'RUN_EVENT',
-                text: event.text,
-                isSystem: true,
-              }),
-            ),
-          );
+        } else if (event.type === 'system' && event.text) {
+          log(event.text);
+        } else if (event.type === 'error') {
+          log(event.text ?? stringifyRaw(event.raw));
         }
       });
+
+      log('Analyzing results...');
 
       const analysis = await apiRequest<{
         analyst: RemoteSparkRef;
@@ -844,8 +774,8 @@ export default function App() {
       }>('/api/simulations/analyze', {
         method: 'POST',
         body: JSON.stringify({
-          product: selectedProduct,
-          personas: activePersonas.map((persona) => ({ id: persona.id, name: persona.name })),
+          product,
+          personas: personasToUse.map((p) => ({ id: p.id, name: p.name })),
           transcript: transcriptLines.join('\n'),
           analystSpark,
         }),
@@ -860,16 +790,13 @@ export default function App() {
           createMessage({
             senderId: 'system',
             senderName: 'SYSTEM_CONCLUSION',
-            text: `${analysis.summary}\n\n[ANALYSIS COMPLETE] -> Proceed to Visualization`,
+            text: `${analysis.summary}\n\n[ANALYSIS COMPLETE] → Proceed to Visualization Tab`,
             isSystem: true,
           }),
         ),
       );
     } catch (error) {
-      if ((error as Error).name === 'AbortError') {
-        return;
-      }
-
+      if ((error as Error).name === 'AbortError') return;
       setMessages((current) =>
         upsertMessages(
           current,
@@ -885,6 +812,119 @@ export default function App() {
       abortRef.current = null;
       setIsSimulating(false);
     }
+  };
+
+  const simulateFromRealData = async () => {
+    if (!health?.configured) {
+      pushSystemMessage('MINDS_API_KEY is missing. Configure the server in Settings before running ICP generation.');
+      setActiveTab('settings');
+      return;
+    }
+    const activeProduct = products.find((p) => p.id === selectedProductId);
+    if (!activeProduct) return;
+    const keyword = activeProduct.icpKeyword?.trim() || activeProduct.name;
+
+    setIsGeneratingIcp(true);
+    setMessages([]);
+    setMetrics([]);
+    setActiveTab('simulation');
+
+    const log = (text: string) =>
+      setMessages((current) =>
+        upsertMessages(
+          current,
+          createMessage({ senderId: 'system', senderName: 'ICP_PIPELINE', text, isSystem: true }),
+        ),
+      );
+
+    log(
+      `SIMULATE FROM REAL DATA\n` +
+        `Keyword: "${keyword}" | Product: ${activeProduct.name}\n\n` +
+        `Step 1/3: Scraping Reddit + Twitter via Apify...`,
+    );
+
+    try {
+      const res = await fetch('/api/icp/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          keyword,
+          productName: activeProduct.name,
+          productCategory: activeProduct.category,
+          productDescription: activeProduct.description,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { message?: string };
+        throw new Error(err.message ?? `Server error ${res.status}`);
+      }
+
+      const data = (await res.json()) as {
+        personas: Array<{
+          id: string;
+          name: string;
+          color: string;
+          archetype: string;
+          remote: RemoteSparkRef;
+        }>;
+        postsScraped: number;
+        redditPosts: number;
+        twitterPosts: number;
+      };
+
+      log(
+        `Step 2/3: ${data.personas.length} Minds AI Sparks created ✓\n` +
+          `Posts scraped: ${data.postsScraped} ` +
+          `(Reddit: ${data.redditPosts}, Twitter: ${data.twitterPosts})\n\n` +
+          data.personas
+            .map((p) => `• ${p.name} [${p.archetype}] → ${p.remote.sparkId.slice(0, 8)}...`)
+            .join('\n'),
+      );
+
+      const newPersonas: PersonaState[] = data.personas.map((p) => ({
+        id: p.id,
+        name: p.name,
+        color: p.color,
+        prompt: '',
+        remote: p.remote,
+      }));
+
+      setIcpPersonas(newPersonas);
+
+      // Sync into personas + groups state so Personas/Groups tabs reflect them
+      setPersonas(newPersonas);
+      const icpGroup: Group = {
+        id: 'icp-auto-group',
+        name: `${activeProduct.name} — Real ICP Panel`,
+        personaIds: newPersonas.map((p) => p.id),
+      };
+      setGroups([icpGroup]);
+      setSelectedGroupId('icp-auto-group');
+      setSelectedGroupEditorId('icp-auto-group');
+
+      log(`\nStep 3/3: Starting simulation...`);
+      await runSimulationWithPersonas(newPersonas, activeProduct);
+    } catch (err) {
+      log(`ERROR: ${(err as Error).message}`);
+    } finally {
+      setIsGeneratingIcp(false);
+    }
+  };
+
+  const startSimulation = async () => {
+    const activeProduct = products.find((p) => p.id === selectedProductId);
+    if (!activeProduct) return;
+    const activePersonas =
+      icpPersonas.length > 0
+        ? icpPersonas
+        : (selectedGroup?.personaIds
+            .map((id) => personas.find((p) => p.id === id))
+            .filter(Boolean) as PersonaState[]) ?? [];
+    if (activePersonas.length === 0) return;
+    setMessages([]);
+    setMetrics([]);
+    await runSimulationWithPersonas(activePersonas, activeProduct);
   };
 
   const renderSimulationTab = () => {
@@ -939,6 +979,19 @@ export default function App() {
               </div>
             </div>
 
+            {icpPersonas.length > 0 && (
+              <div className="mb-2 text-xs text-emerald-400 border border-emerald-400/30 bg-emerald-400/5 p-2 rounded-sm">
+                ✓ {icpPersonas.length} data-driven personas ready
+              </div>
+            )}
+            <button
+              onClick={simulateFromRealData}
+              disabled={isGeneratingIcp || isSimulating}
+              className="w-full bg-[#bd93f9] text-[#282a36] hover:bg-[#bd93f9]/80 p-2 font-bold flex items-center justify-center gap-2 transition-colors rounded-sm disabled:opacity-50 mb-2 text-sm"
+            >
+              <Sparkles className="w-4 h-4" />
+              {isGeneratingIcp ? 'GENERATING...' : 'SIMULATE FROM REAL DATA'}
+            </button>
             {!isSimulating ? (
               <button
                 onClick={startSimulation}
@@ -959,17 +1012,24 @@ export default function App() {
           </div>
 
           <div className="p-4 flex-1 overflow-y-auto custom-scrollbar">
-            <h3 className="text-xs text-[#bd93f9] uppercase tracking-wider mb-3">Group Members</h3>
-            {groupMembers.length === 0 ? (
+            <h3 className="text-xs text-[#bd93f9] uppercase tracking-wider mb-3">
+              {icpPersonas.length > 0 ? 'Active Nodes' : 'Group Members'}
+            </h3>
+            {(icpPersonas.length > 0 ? icpPersonas : groupMembers).length === 0 ? (
               <div className="text-sm text-[#6272a4]">No minds in this group.</div>
             ) : (
               <div className="flex flex-col gap-2">
-                {groupMembers.map((persona) => {
-                  const visuals = getPersonaVisuals(persona.id);
+                {(icpPersonas.length > 0 ? icpPersonas : groupMembers).map((p) => {
+                  const color = p.color ?? getPersonaVisuals(p.id).color;
                   return (
-                    <div key={persona.id} className="flex items-center gap-3 text-sm">
-                      <span className="text-[#50fa7b]">[ok]</span>
-                      <span className={`truncate ${visuals.color}`}>{persona.name}</span>
+                    <div key={p.id} className="flex items-center gap-3 text-sm">
+                      <span className="text-[#50fa7b]">✓</span>
+                      <div className="flex flex-col">
+                        <span className={`truncate ${color}`}>{p.name}</span>
+                        {icpPersonas.length > 0 && (
+                          <span className="text-[10px] text-[#6272a4]">data-driven</span>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
@@ -1092,6 +1152,19 @@ export default function App() {
                     onChange={(event) => updateProduct(activeProduct.id, { description: event.target.value })}
                   />
                 </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-[#bd93f9] uppercase tracking-wider">ICP Keyword</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. sales automation SaaS, B2B founder"
+                    className="bg-[#44475a] border-none p-3 text-[#f8f8f2] focus:outline-none focus:ring-1 focus:ring-[#ff79c6] rounded-sm text-sm"
+                    value={activeProduct.icpKeyword ?? ''}
+                    onChange={(event) => updateProduct(activeProduct.id, { icpKeyword: event.target.value })}
+                  />
+                  <span className="text-[10px] text-[#6272a4]">
+                    Searched on Reddit + Twitter to generate real ICP personas.
+                  </span>
+                </div>
               </div>
             </>
           )}
@@ -1130,6 +1203,12 @@ export default function App() {
         </div>
 
         <div className="flex-1 p-6 bg-[#282a36] flex flex-col gap-6 overflow-y-auto custom-scrollbar">
+          {icpPersonas.length > 0 && (
+            <div className="text-xs text-emerald-400 border border-emerald-400/30 bg-emerald-400/5 p-3 rounded-sm">
+              ✓ Showing {icpPersonas.length} data-driven personas from last real data run.
+              Hardcoded personas will return on page reload.
+            </div>
+          )}
           {selectedPersona && (
             <>
               <h2 className="text-xl text-[#8be9fd] font-bold border-b border-[#44475a] pb-2 flex items-center gap-3">
@@ -1244,6 +1323,12 @@ export default function App() {
                   Delete Group
                 </button>
               </div>
+
+              {editorGroup.id === 'icp-auto-group' && (
+                <div className="text-xs text-emerald-400 border border-emerald-400/30 bg-emerald-400/5 p-3 rounded-sm">
+                  ✓ Auto-generated panel from real ICP data. Contains all {editorGroup.personaIds.length} data-driven personas.
+                </div>
+              )}
 
               <div className="max-w-3xl flex flex-col gap-4">
                 <div className="flex flex-col gap-1">
