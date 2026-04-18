@@ -1,31 +1,78 @@
 @import "tailwindcss";
+@import "@fontsource-variable/geist";
 
 @theme {
-  --font-mono: "JetBrains Mono", "Courier New", Courier, monospace;
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Society Sim OS — neo-brutalist tokens */
+  --color-sso-bg: #0a0a0a;
+  --color-sso-surface: #111111;
+  --color-sso-surface-2: #0d0d0d;
+  --color-sso-border: #1e1e1e;
+  --color-sso-border-soft: #161616;
+  --color-sso-border-hair: #1a1a1a;
+  --color-sso-text: #ffffff;
+  --color-sso-text-dim: #888888;
+  --color-sso-text-mute: #444444;
+  --color-sso-text-faint: #333333;
+  --color-sso-accent: #f5f500;
+  --color-sso-accent-dim: #6b6b00;
+  --color-sso-accent-2: #00e5ff;
+  --color-sso-accent-2-dim: #006b73;
+  --color-sso-ok: #22c55e;
+  --color-sso-warn: #f59e0b;
+  --color-sso-danger: #ef4444;
 }
 
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
 body {
-  background-color: #050505;
+  background: var(--color-sso-bg);
+  color: var(--color-sso-text);
+  font-family: var(--font-sans);
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+  padding: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  letter-spacing: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-sso-accent);
+  outline-offset: 2px;
 }
 
 .custom-scrollbar::-webkit-scrollbar {
   width: 8px;
+  height: 8px;
 }
 
 .custom-scrollbar::-webkit-scrollbar-track {
-  background: rgba(0, 255, 0, 0.05);
-  border-left: 1px solid rgba(0, 255, 0, 0.2);
+  background: transparent;
+  border-left: 1px solid var(--color-sso-border);
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: rgba(0, 255, 0, 0.3);
+  background: var(--color-sso-border);
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 255, 0, 0.5);
+  background: var(--color-sso-accent);
 }
 
-/* 3D Utilities */
 .preserve-3d {
   transform-style: preserve-3d;
 }
@@ -41,4 +88,18 @@ body {
 
 .animate-scanline {
   animation: scanline 3s linear infinite;
+}
+
+@keyframes sso-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.sso-caret {
+  display: inline-block;
+  width: 0.55em;
+  height: 1em;
+  background: var(--color-sso-accent);
+  vertical-align: -0.1em;
+  animation: sso-pulse 1.1s steps(2, end) infinite;
 }

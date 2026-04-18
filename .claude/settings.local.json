@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git fetch *)",
+      "Bash(git merge *)",
+      "Bash(npm install *)",
+      "Bash(npm run *)",
+      "Bash(git check-ignore *)",
+      "Bash(node -e \"const p=require\\('./node_modules/motion/package.json'\\); console.log\\(Object.keys\\(p.exports\\)\\)\")",
+      "Bash(node -e \"console.log\\(require\\('./node_modules/motion/package.json'\\).version\\)\")"
+    ]
+  }
+}

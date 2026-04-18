@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { AnimatedBackground } from './components/ui/AnimatedBackground';
+import { Logo } from './components/ui/Logo';
+import { KpiCard } from './components/ui/KpiCard';
 import {
   Activity,
   ArrowDown,
@@ -161,16 +164,16 @@ const DEFAULT_STORAGE_STATE = (): StoredAppState => ({
 });
 
 const VISUAL_COLORS: Record<string, string> = {
-  cyan: '#8be9fd',
-  pink: '#ff79c6',
-  yellow: '#f1fa8c',
-  emerald: '#50fa7b',
-  purple: '#bd93f9',
-  blue: '#8be9fd',
-  orange: '#ffb86c',
-  rose: '#ff79c6',
-  indigo: '#6272f9',
-  fuchsia: '#ff79c6',
+  cyan: '#5cc8d6',
+  pink: '#d67ba0',
+  yellow: '#d6c25c',
+  emerald: '#5cd69b',
+  purple: '#a78cd6',
+  blue: '#6ba0d6',
+  orange: '#d69b5c',
+  rose: '#d67b8c',
+  indigo: '#8c94d6',
+  fuchsia: '#c67bd6',
 };
 
 const HEALTH_POLL_INTERVAL_MS = 30_000;
@@ -204,7 +207,7 @@ function getPersonaVisuals(id: string): PersonaVisuals {
 
 function toVisualColor(tailwindColor: string): string {
   const key = Object.keys(VISUAL_COLORS).find((colorKey) => tailwindColor.includes(colorKey));
-  return key ? VISUAL_COLORS[key] : '#f8f8f2';
+  return key ? VISUAL_COLORS[key] : '#ffffff';
 }
 
 function upsertMessages(
@@ -626,6 +629,18 @@ export default function App() {
     );
   };
 
+  const deleteProduct = (productId: string) => {
+    setProducts((current) => {
+      const filtered = current.filter((product) => product.id !== productId);
+      return filtered.length === 0 ? DEFAULT_PRODUCTS : filtered;
+    });
+
+    if (selectedProductId === productId) {
+      const fallbackId = products.find((product) => product.id !== productId)?.id ?? DEFAULT_PRODUCTS[0].id;
+      setSelectedProductId(fallbackId);
+    }
+  };
+
   const updateGroup = (groupId: string, updates: Partial<Group>) => {
     setGroups((current) => current.map((group) => (group.id === groupId ? { ...group, ...updates } : group)));
   };
@@ -896,12 +911,12 @@ export default function App() {
 
     return (
       <>
-        <div className="w-72 border-r border-[#44475a] flex flex-col bg-[#282a36]">
-          <div className="p-4 border-b border-[#44475a] flex flex-col gap-4">
+        <div className="w-72 border-r border-[#1e1e1e] flex flex-col bg-[#111111]">
+          <div className="p-4 border-b border-[#1e1e1e] flex flex-col gap-4">
             <div className="flex flex-col gap-1">
-              <label className="text-xs text-[#bd93f9] uppercase tracking-wider">Active Product</label>
+              <label className="text-xs text-[#f5f500] uppercase tracking-wider">Active Product</label>
               <select
-                className="bg-[#44475a] border-none p-2 text-[#f8f8f2] focus:outline-none focus:ring-1 focus:ring-[#ff79c6] rounded-sm text-sm"
+                className="bg-[#1e1e1e] border-none p-2 text-[#ffffff] focus:outline-none focus:ring-1 focus:ring-[#f5f500] rounded-none text-sm"
                 value={selectedProductId}
                 onChange={(event) => setSelectedProductId(event.target.value)}
                 disabled={isSimulating}
@@ -915,9 +930,9 @@ export default function App() {
             </div>
 
             <div className="flex flex-col gap-1">
-              <label className="text-xs text-[#bd93f9] uppercase tracking-wider">Active Group</label>
+              <label className="text-xs text-[#f5f500] uppercase tracking-wider">Active Group</label>
               <select
-                className="bg-[#44475a] border-none p-2 text-[#f8f8f2] focus:outline-none focus:ring-1 focus:ring-[#ff79c6] rounded-sm text-sm"
+                className="bg-[#1e1e1e] border-none p-2 text-[#ffffff] focus:outline-none focus:ring-1 focus:ring-[#f5f500] rounded-none text-sm"
                 value={selectedGroupId}
                 onChange={(event) => setSelectedGroupId(event.target.value)}
                 disabled={isSimulating}
@@ -930,7 +945,7 @@ export default function App() {
               </select>
             </div>
 
-            <div className="text-[10px] text-[#6272a4] space-y-1">
+            <div className="text-[10px] text-[#444444] space-y-1">
               <div>Provider: MindsAI Sparks</div>
               <div>Group limit: {maxPanelMinds} minds</div>
               <div>
@@ -942,7 +957,7 @@ export default function App() {
             {!isSimulating ? (
               <button
                 onClick={startSimulation}
-                className="w-full bg-[#50fa7b] text-[#282a36] hover:bg-[#50fa7b]/80 p-2 font-bold flex items-center justify-center gap-2 transition-colors rounded-sm"
+                className="w-full bg-[#22c55e] text-[#111111] hover:bg-[#22c55e]/80 p-2 font-bold flex items-center justify-center gap-2 transition-colors rounded-none"
               >
                 <Play className="w-4 h-4" />
                 START GROUP RUN
@@ -950,7 +965,7 @@ export default function App() {
             ) : (
               <button
                 onClick={stopSimulation}
-                className="w-full bg-[#ff5555] text-[#f8f8f2] hover:bg-[#ff5555]/80 p-2 font-bold flex items-center justify-center gap-2 transition-colors rounded-sm"
+                className="w-full bg-[#ef4444] text-[#ffffff] hover:bg-[#ef4444]/80 p-2 font-bold flex items-center justify-center gap-2 transition-colors rounded-none"
               >
                 <Square className="w-4 h-4" />
                 HALT RUN
@@ -959,16 +974,16 @@ export default function App() {
           </div>
 
           <div className="p-4 flex-1 overflow-y-auto custom-scrollbar">
-            <h3 className="text-xs text-[#bd93f9] uppercase tracking-wider mb-3">Group Members</h3>
+            <h3 className="text-xs text-[#f5f500] uppercase tracking-wider mb-3">Group Members</h3>
             {groupMembers.length === 0 ? (
-              <div className="text-sm text-[#6272a4]">No minds in this group.</div>
+              <div className="text-sm text-[#444444]">No minds in this group.</div>
             ) : (
               <div className="flex flex-col gap-2">
                 {groupMembers.map((persona) => {
                   const visuals = getPersonaVisuals(persona.id);
                   return (
                     <div key={persona.id} className="flex items-center gap-3 text-sm">
-                      <span className="text-[#50fa7b]">[ok]</span>
+                      <span className="text-[#22c55e]">[ok]</span>
                       <span className={`truncate ${visuals.color}`}>{persona.name}</span>
                     </div>
                   );
@@ -978,40 +993,50 @@ export default function App() {
           </div>
         </div>
 
-        <div className="flex-1 flex flex-col bg-[#282a36] relative overflow-hidden">
+        <div className="flex-1 flex flex-col bg-[#111111] relative overflow-hidden">
           <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar" ref={terminalRef}>
             {messages.length === 0 && !isSimulating && (
-              <div className="h-full flex items-center justify-center text-[#6272a4]">[ WAITING FOR INPUT ]</div>
-            )}
-
-            {messages.map((message) => (
-              <div key={message.id} className={`flex flex-col ${message.isSystem ? 'opacity-90' : ''}`}>
-                <div className="flex items-center gap-2 mb-1">
-                  <span
-                    className={`text-xs font-bold ${
-                      message.isSystem ? 'text-[#ff79c6]' : getPersonaVisuals(message.senderId).color
-                    }`}
-                  >
-                    {message.senderName}
-                  </span>
-                  <span className="text-[10px] text-[#6272a4]">
-                    {new Date(message.createdAt).toLocaleTimeString()}
-                  </span>
+              <div className="h-full flex flex-col items-center justify-center gap-3">
+                <div className="w-10 h-10 border-2 border-[#1e1e1e] flex items-center justify-center">
+                  <span className="text-[#f5f500] text-xl leading-none animate-pulse">{'>'}</span>
                 </div>
-                <div
-                  className={`p-3 rounded-sm ${
-                    message.isSystem
-                      ? 'bg-[#bd93f9]/10 text-[#bd93f9] border border-[#bd93f9]/30 whitespace-pre-wrap'
-                      : 'bg-[#44475a] text-[#f8f8f2]'
-                  }`}
-                >
-                  {message.text}
+                <div className="text-[10px] font-bold tracking-[0.18em] text-[#444444] uppercase">
+                  Waiting for input
                 </div>
               </div>
-            ))}
+            )}
+
+            {messages.map((message) => {
+              const visuals = message.isSystem ? null : getPersonaVisuals(message.senderId);
+              return (
+                <div key={message.id} className={`flex flex-col ${message.isSystem ? 'opacity-90' : ''}`}>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span
+                      className={`text-[10px] font-bold tracking-[0.12em] uppercase ${
+                        message.isSystem ? 'text-[#f5f500]' : visuals!.color
+                      }`}
+                    >
+                      {message.senderName}
+                    </span>
+                    <span className="text-[9px] text-[#444444] tracking-wider">
+                      {new Date(message.createdAt).toLocaleTimeString()}
+                    </span>
+                  </div>
+                  <div
+                    className={`p-3 rounded-none border-l-2 ${
+                      message.isSystem
+                        ? 'bg-[#f5f500]/10 text-[#f5f500] border-[#f5f500] whitespace-pre-wrap'
+                        : 'bg-[#1e1e1e] text-[#ffffff] border-[currentColor]'
+                    } ${!message.isSystem ? visuals!.color : ''}`}
+                  >
+                    <span className={message.isSystem ? '' : 'text-[#ffffff]'}>{message.text}</span>
+                  </div>
+                </div>
+              );
+            })}
 
             {isSimulating && (
-              <div className="flex items-center gap-2 text-sm text-[#8be9fd] mt-4">
+              <div className="flex items-center gap-2 text-sm text-[#00e5ff] mt-4">
                 <span className="animate-pulse">[]</span>
                 Streaming spark responses...
               </div>
@@ -1027,17 +1052,17 @@ export default function App() {
 
     return (
       <>
-        <div className="w-72 border-r border-[#44475a] flex flex-col bg-[#282a36] p-4 gap-4">
-          <h3 className="text-xs text-[#bd93f9] uppercase tracking-wider">Saved Products</h3>
+        <div className="w-72 border-r border-[#1e1e1e] flex flex-col bg-[#111111] p-4 gap-4">
+          <h3 className="text-xs text-[#f5f500] uppercase tracking-wider">Saved Products</h3>
           <div className="flex flex-col gap-2 flex-1 overflow-y-auto custom-scrollbar">
             {products.map((product) => (
               <div
                 key={product.id}
                 onClick={() => setSelectedProductId(product.id)}
-                className={`p-2 cursor-pointer rounded-sm text-sm border ${
+                className={`p-2 cursor-pointer rounded-none text-sm border ${
                   selectedProductId === product.id
-                    ? 'border-[#ff79c6] bg-[#ff79c6]/10 text-[#ff79c6]'
-                    : 'border-transparent text-[#f8f8f2] hover:bg-[#44475a]'
+                    ? 'border-[#f5f500] bg-[#f5f500]/10 text-[#f5f500]'
+                    : 'border-transparent text-[#ffffff] hover:bg-[#1e1e1e]'
                 }`}
               >
                 {product.name}
@@ -1053,41 +1078,48 @@ export default function App() {
               ]);
               setSelectedProductId(nextId);
             }}
-            className="w-full bg-[#44475a] text-[#f8f8f2] hover:bg-[#6272a4] p-2 text-sm font-bold transition-colors rounded-sm"
+            className="w-full bg-[#1e1e1e] text-[#ffffff] hover:bg-[#444444] p-2 text-sm font-bold transition-colors rounded-none"
           >
             + ADD NEW
           </button>
         </div>
 
-        <div className="flex-1 p-6 bg-[#282a36] flex flex-col gap-6 overflow-y-auto custom-scrollbar">
+        <div className="flex-1 p-6 bg-[#111111] flex flex-col gap-6 overflow-y-auto custom-scrollbar">
           {activeProduct && (
             <>
-              <h2 className="text-xl text-[#ff79c6] font-bold border-b border-[#44475a] pb-2">
-                Edit Product
-              </h2>
+              <div className="flex items-center justify-between gap-4 border-b border-[#1e1e1e] pb-2">
+                <h2 className="text-xl text-[#f5f500] font-bold">Edit Product</h2>
+                <button
+                  onClick={() => deleteProduct(activeProduct.id)}
+                  className="text-[#ef4444] hover:text-[#ff8080] flex items-center gap-2 text-sm"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  Delete Product
+                </button>
+              </div>
               <div className="flex flex-col gap-4 max-w-2xl">
                 <div className="flex flex-col gap-1">
-                  <label className="text-xs text-[#bd93f9] uppercase tracking-wider">Name</label>
+                  <label className="text-xs text-[#f5f500] uppercase tracking-wider">Name</label>
                   <input
                     type="text"
-                    className="bg-[#44475a] border-none p-3 text-[#f8f8f2] focus:outline-none focus:ring-1 focus:ring-[#ff79c6] rounded-sm"
+                    className="bg-[#1e1e1e] border-none p-3 text-[#ffffff] focus:outline-none focus:ring-1 focus:ring-[#f5f500] rounded-none"
                     value={activeProduct.name}
                     onChange={(event) => updateProduct(activeProduct.id, { name: event.target.value })}
                   />
                 </div>
                 <div className="flex flex-col gap-1">
-                  <label className="text-xs text-[#bd93f9] uppercase tracking-wider">Category</label>
+                  <label className="text-xs text-[#f5f500] uppercase tracking-wider">Category</label>
                   <input
                     type="text"
-                    className="bg-[#44475a] border-none p-3 text-[#f8f8f2] focus:outline-none focus:ring-1 focus:ring-[#ff79c6] rounded-sm"
+                    className="bg-[#1e1e1e] border-none p-3 text-[#ffffff] focus:outline-none focus:ring-1 focus:ring-[#f5f500] rounded-none"
                     value={activeProduct.category}
                     onChange={(event) => updateProduct(activeProduct.id, { category: event.target.value })}
                   />
                 </div>
                 <div className="flex flex-col gap-1">
-                  <label className="text-xs text-[#bd93f9] uppercase tracking-wider">Description</label>
+                  <label className="text-xs text-[#f5f500] uppercase tracking-wider">Description</label>
                   <textarea
-                    className="bg-[#44475a] border-none p-3 text-[#f8f8f2] focus:outline-none focus:ring-1 focus:ring-[#ff79c6] resize-none min-h-[200px] rounded-sm custom-scrollbar"
+                    className="bg-[#1e1e1e] border-none p-3 text-[#ffffff] focus:outline-none focus:ring-1 focus:ring-[#f5f500] resize-none min-h-[200px] rounded-none custom-scrollbar"
                     value={activeProduct.description}
                     onChange={(event) => updateProduct(activeProduct.id, { description: event.target.value })}
                   />
@@ -1105,8 +1137,8 @@ export default function App() {
 
     return (
       <>
-        <div className="w-72 border-r border-[#44475a] flex flex-col bg-[#282a36] p-4 gap-4">
-          <h3 className="text-xs text-[#bd93f9] uppercase tracking-wider">Available Sparks</h3>
+        <div className="w-72 border-r border-[#1e1e1e] flex flex-col bg-[#111111] p-4 gap-4">
+          <h3 className="text-xs text-[#f5f500] uppercase tracking-wider">Available Sparks</h3>
           <div className="flex flex-col gap-2 flex-1 overflow-y-auto custom-scrollbar">
             {personas.map((persona) => {
               const visuals = getPersonaVisuals(persona.id);
@@ -1114,10 +1146,10 @@ export default function App() {
               return (
                 <div
                   key={persona.id}
-                  className={`flex items-center gap-2 p-2 cursor-pointer rounded-sm text-sm border ${
+                  className={`flex items-center gap-2 p-2 cursor-pointer rounded-none text-sm border ${
                     selectedPersona?.id === persona.id
-                      ? 'border-[#8be9fd] bg-[#8be9fd]/10'
-                      : 'border-transparent hover:bg-[#44475a]'
+                      ? 'border-[#00e5ff] bg-[#00e5ff]/10'
+                      : 'border-transparent hover:bg-[#1e1e1e]'
                   }`}
                   onClick={() => setSelectedVisPersona(persona.id)}
                 >
@@ -1129,10 +1161,10 @@ export default function App() {
           </div>
         </div>
 
-        <div className="flex-1 p-6 bg-[#282a36] flex flex-col gap-6 overflow-y-auto custom-scrollbar">
+        <div className="flex-1 p-6 bg-[#111111] flex flex-col gap-6 overflow-y-auto custom-scrollbar">
           {selectedPersona && (
             <>
-              <h2 className="text-xl text-[#8be9fd] font-bold border-b border-[#44475a] pb-2 flex items-center gap-3">
+              <h2 className="text-xl text-[#00e5ff] font-bold border-b border-[#1e1e1e] pb-2 flex items-center gap-3">
                 {(() => {
                   const visuals = getPersonaVisuals(selectedPersona.id);
                   const Icon = visuals.icon;
@@ -1143,34 +1175,34 @@ export default function App() {
 
               <div className="flex flex-col gap-4 max-w-2xl">
                 <div className="flex flex-col gap-1">
-                  <label className="text-xs text-[#bd93f9] uppercase tracking-wider">Name</label>
+                  <label className="text-xs text-[#f5f500] uppercase tracking-wider">Name</label>
                   <input
                     type="text"
-                    className="bg-[#44475a] border-none p-3 text-[#f8f8f2] focus:outline-none focus:ring-1 focus:ring-[#8be9fd] rounded-sm"
+                    className="bg-[#1e1e1e] border-none p-3 text-[#ffffff] focus:outline-none focus:ring-1 focus:ring-[#00e5ff] rounded-none"
                     value={selectedPersona.name}
                     onChange={(event) => updatePersona(selectedPersona.id, { name: event.target.value })}
                   />
                 </div>
 
                 <div className="flex flex-col gap-1">
-                  <label className="text-xs text-[#bd93f9] uppercase tracking-wider">System Prompt</label>
+                  <label className="text-xs text-[#f5f500] uppercase tracking-wider">System Prompt</label>
                   <textarea
-                    className="bg-[#44475a] border-none p-3 text-[#f8f8f2] focus:outline-none focus:ring-1 focus:ring-[#8be9fd] resize-none min-h-[300px] rounded-sm custom-scrollbar"
+                    className="bg-[#1e1e1e] border-none p-3 text-[#ffffff] focus:outline-none focus:ring-1 focus:ring-[#00e5ff] resize-none min-h-[300px] rounded-none custom-scrollbar"
                     value={selectedPersona.prompt}
                     onChange={(event) => updatePersona(selectedPersona.id, { prompt: event.target.value })}
                   />
                 </div>
 
                 <div className="grid grid-cols-2 gap-4 text-xs">
-                  <div className="bg-[#44475a] rounded-sm p-3">
-                    <div className="text-[#bd93f9] uppercase tracking-wider mb-1">Remote Spark</div>
-                    <div className="text-[#f8f8f2] break-all">
+                  <div className="bg-[#1e1e1e] rounded-none p-3">
+                    <div className="text-[#f5f500] uppercase tracking-wider mb-1">Remote Spark</div>
+                    <div className="text-[#ffffff] break-all">
                       {selectedPersona.remote?.sparkId ?? 'Pending sync'}
                     </div>
                   </div>
-                  <div className="bg-[#44475a] rounded-sm p-3">
-                    <div className="text-[#bd93f9] uppercase tracking-wider mb-1">Last Sync</div>
-                    <div className="text-[#f8f8f2]">
+                  <div className="bg-[#1e1e1e] rounded-none p-3">
+                    <div className="text-[#f5f500] uppercase tracking-wider mb-1">Last Sync</div>
+                    <div className="text-[#ffffff]">
                       {selectedPersona.remote?.lastSyncedAt
                         ? new Date(selectedPersona.remote.lastSyncedAt).toLocaleString()
                         : 'Not synced'}
@@ -1195,16 +1227,16 @@ export default function App() {
 
     return (
       <>
-        <div className="w-72 border-r border-[#44475a] flex flex-col bg-[#282a36] p-4 gap-4">
-          <h3 className="text-xs text-[#bd93f9] uppercase tracking-wider">Groups</h3>
+        <div className="w-72 border-r border-[#1e1e1e] flex flex-col bg-[#111111] p-4 gap-4">
+          <h3 className="text-xs text-[#f5f500] uppercase tracking-wider">Groups</h3>
           <div className="flex flex-col gap-2 flex-1 overflow-y-auto custom-scrollbar">
             {groups.map((group) => (
               <div
                 key={group.id}
-                className={`p-3 rounded-sm border cursor-pointer ${
+                className={`p-3 rounded-none border cursor-pointer ${
                   editorGroup?.id === group.id
-                    ? 'border-[#50fa7b] bg-[#50fa7b]/10'
-                    : 'border-transparent hover:bg-[#44475a]'
+                    ? 'border-[#22c55e] bg-[#22c55e]/10'
+                    : 'border-transparent hover:bg-[#1e1e1e]'
                 }`}
                 onClick={() => {
                   setSelectedGroupEditorId(group.id);
@@ -1212,12 +1244,12 @@ export default function App() {
                 }}
               >
                 <div className="flex items-center justify-between gap-2">
-                  <div className="text-sm text-[#f8f8f2] truncate">{group.name}</div>
-                  <div className="text-[10px] text-[#6272a4]">
+                  <div className="text-sm text-[#ffffff] truncate">{group.name}</div>
+                  <div className="text-[10px] text-[#444444]">
                     {group.personaIds.length}/{maxPanelMinds}
                   </div>
                 </div>
-                <div className="text-[10px] text-[#6272a4] mt-1 truncate">
+                <div className="text-[10px] text-[#444444] mt-1 truncate">
                   {group.remotePanelId ? `Group ${group.remotePanelId.slice(0, 8)}...` : 'Pending group sync'}
                 </div>
               </div>
@@ -1225,20 +1257,20 @@ export default function App() {
           </div>
           <button
             onClick={addGroup}
-            className="w-full bg-[#44475a] text-[#f8f8f2] hover:bg-[#6272a4] p-2 text-sm font-bold transition-colors rounded-sm"
+            className="w-full bg-[#1e1e1e] text-[#ffffff] hover:bg-[#444444] p-2 text-sm font-bold transition-colors rounded-none"
           >
             + ADD GROUP
           </button>
         </div>
 
-        <div className="flex-1 p-6 bg-[#282a36] flex flex-col gap-6 overflow-y-auto custom-scrollbar">
+        <div className="flex-1 p-6 bg-[#111111] flex flex-col gap-6 overflow-y-auto custom-scrollbar">
           {editorGroup && (
             <>
-              <div className="flex items-center justify-between gap-4 border-b border-[#44475a] pb-2">
-                <h2 className="text-xl text-[#50fa7b] font-bold">Edit Group</h2>
+              <div className="flex items-center justify-between gap-4 border-b border-[#1e1e1e] pb-2">
+                <h2 className="text-xl text-[#22c55e] font-bold">Edit Group</h2>
                 <button
                   onClick={() => deleteGroup(editorGroup.id)}
-                  className="text-[#ff5555] hover:text-[#ff8080] flex items-center gap-2 text-sm"
+                  className="text-[#ef4444] hover:text-[#ff8080] flex items-center gap-2 text-sm"
                 >
                   <Trash2 className="w-4 h-4" />
                   Delete Group
@@ -1247,18 +1279,18 @@ export default function App() {
 
               <div className="max-w-3xl flex flex-col gap-4">
                 <div className="flex flex-col gap-1">
-                  <label className="text-xs text-[#bd93f9] uppercase tracking-wider">Group Name</label>
+                  <label className="text-xs text-[#f5f500] uppercase tracking-wider">Group Name</label>
                   <input
                     type="text"
-                    className="bg-[#44475a] border-none p-3 text-[#f8f8f2] focus:outline-none focus:ring-1 focus:ring-[#50fa7b] rounded-sm"
+                    className="bg-[#1e1e1e] border-none p-3 text-[#ffffff] focus:outline-none focus:ring-1 focus:ring-[#22c55e] rounded-none"
                     value={editorGroup.name}
                     onChange={(event) => updateGroup(editorGroup.id, { name: event.target.value })}
                   />
                 </div>
 
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-                  <div className="bg-[#20222b] border border-[#44475a] rounded-sm p-4">
-                    <div className="text-xs text-[#bd93f9] uppercase tracking-wider mb-3">Available Sparks</div>
+                  <div className="bg-[#0d0d0d] border border-[#1e1e1e] rounded-none p-4">
+                    <div className="text-xs text-[#f5f500] uppercase tracking-wider mb-3">Available Sparks</div>
                     <div className="space-y-2 max-h-80 overflow-y-auto custom-scrollbar pr-1">
                       {personas.map((persona) => {
                         const visuals = getPersonaVisuals(persona.id);
@@ -1266,15 +1298,15 @@ export default function App() {
                         return (
                           <label
                             key={persona.id}
-                            className={`flex items-center gap-3 p-2 rounded-sm cursor-pointer ${
-                              selected ? 'bg-[#50fa7b]/10' : 'hover:bg-[#44475a]'
+                            className={`flex items-center gap-3 p-2 rounded-none cursor-pointer ${
+                              selected ? 'bg-[#22c55e]/10' : 'hover:bg-[#1e1e1e]'
                             }`}
                           >
                             <input
                               type="checkbox"
                               checked={selected}
                               onChange={() => toggleGroupMember(editorGroup.id, persona.id)}
-                              className="accent-[#50fa7b]"
+                              className="accent-[#22c55e]"
                             />
                             <span className={`text-sm ${visuals.color}`}>{persona.name}</span>
                           </label>
@@ -1283,39 +1315,39 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="bg-[#20222b] border border-[#44475a] rounded-sm p-4">
+                  <div className="bg-[#0d0d0d] border border-[#1e1e1e] rounded-none p-4">
                     <div className="flex items-center justify-between mb-3">
-                      <div className="text-xs text-[#bd93f9] uppercase tracking-wider">Selected Order</div>
-                      <div className="text-[10px] text-[#6272a4]">
+                      <div className="text-xs text-[#f5f500] uppercase tracking-wider">Selected Order</div>
+                      <div className="text-[10px] text-[#444444]">
                         {editorGroup.personaIds.length}/{maxPanelMinds}
                       </div>
                     </div>
                     <div className="space-y-2">
                       {selectedMembers.length === 0 ? (
-                        <div className="text-sm text-[#6272a4]">Select minds to compose this group.</div>
+                        <div className="text-sm text-[#444444]">Select minds to compose this group.</div>
                       ) : (
                         selectedMembers.map((persona, index) => {
                           const visuals = getPersonaVisuals(persona.id);
                           return (
                             <div
                               key={persona.id}
-                              className="flex items-center justify-between gap-3 bg-[#44475a] rounded-sm p-2"
+                              className="flex items-center justify-between gap-3 bg-[#1e1e1e] rounded-none p-2"
                             >
                               <div className="flex items-center gap-3 min-w-0">
-                                <span className="text-[10px] text-[#6272a4]">{index + 1}</span>
+                                <span className="text-[10px] text-[#444444]">{index + 1}</span>
                                 <span className={`text-sm truncate ${visuals.color}`}>{persona.name}</span>
                               </div>
                               <div className="flex items-center gap-2">
                                 <button
                                   onClick={() => moveGroupMember(editorGroup.id, persona.id, -1)}
-                                  className="text-[#8be9fd] hover:text-white disabled:text-[#6272a4]"
+                                  className="text-[#00e5ff] hover:text-white disabled:text-[#444444]"
                                   disabled={index === 0}
                                 >
                                   <ArrowUp className="w-4 h-4" />
                                 </button>
                                 <button
                                   onClick={() => moveGroupMember(editorGroup.id, persona.id, 1)}
-                                  className="text-[#8be9fd] hover:text-white disabled:text-[#6272a4]"
+                                  className="text-[#00e5ff] hover:text-white disabled:text-[#444444]"
                                   disabled={index === selectedMembers.length - 1}
                                 >
                                   <ArrowDown className="w-4 h-4" />
@@ -1330,21 +1362,21 @@ export default function App() {
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
-                  <div className="bg-[#44475a] rounded-sm p-3">
-                    <div className="text-[#bd93f9] uppercase tracking-wider mb-1">Remote Group</div>
-                    <div className="text-[#f8f8f2] break-all">
+                  <div className="bg-[#1e1e1e] rounded-none p-3">
+                    <div className="text-[#f5f500] uppercase tracking-wider mb-1">Remote Group</div>
+                    <div className="text-[#ffffff] break-all">
                       {editorGroup.remotePanelId ?? 'Pending sync'}
                     </div>
                   </div>
-                  <div className="bg-[#44475a] rounded-sm p-3">
-                    <div className="text-[#bd93f9] uppercase tracking-wider mb-1">Fingerprint</div>
-                    <div className="text-[#f8f8f2] break-all">
+                  <div className="bg-[#1e1e1e] rounded-none p-3">
+                    <div className="text-[#f5f500] uppercase tracking-wider mb-1">Fingerprint</div>
+                    <div className="text-[#ffffff] break-all">
                       {editorGroup.remoteFingerprint ?? 'Pending sync'}
                     </div>
                   </div>
-                  <div className="bg-[#44475a] rounded-sm p-3">
-                    <div className="text-[#bd93f9] uppercase tracking-wider mb-1">Last Sync</div>
-                    <div className="text-[#f8f8f2]">
+                  <div className="bg-[#1e1e1e] rounded-none p-3">
+                    <div className="text-[#f5f500] uppercase tracking-wider mb-1">Last Sync</div>
+                    <div className="text-[#ffffff]">
                       {editorGroup.lastSyncedAt
                         ? new Date(editorGroup.lastSyncedAt).toLocaleString()
                         : 'Not synced'}
@@ -1362,12 +1394,26 @@ export default function App() {
   const renderVisualizationTab = () => {
     if (metrics.length === 0) {
       return (
-        <div className="flex-1 flex flex-col items-center justify-center text-[#6272a4] gap-4">
-          <div className="text-4xl">[]</div>
-          <div>[ AWAITING ANALYSIS DATA ]</div>
+        <div className="flex-1 flex flex-col items-center justify-center gap-4">
+          <div className="w-14 h-14 border-2 border-[#1e1e1e] flex items-center justify-center">
+            <span className="text-[#f5f500] text-2xl leading-none animate-pulse">{'>'}</span>
+          </div>
+          <div className="text-[11px] font-bold tracking-[0.18em] text-[#444444] uppercase">
+            Awaiting analysis data
+          </div>
         </div>
       );
     }
+
+    const avg = (key: 'sentiment' | 'persuasion' | 'passion') =>
+      Math.round(metrics.reduce((sum, m) => sum + m[key], 0) / metrics.length);
+    const avgSentiment = avg('sentiment');
+    const avgPersuasion = avg('persuasion');
+    const avgPassion = avg('passion');
+    const sentimentDelta =
+      avgSentiment > 20 ? 'POSITIVE SIGNAL' : avgSentiment < -20 ? 'NEGATIVE SIGNAL' : 'NEUTRAL BAND';
+    const sentimentTone: 'ok' | 'warn' | 'danger' =
+      avgSentiment > 20 ? 'ok' : avgSentiment < -20 ? 'danger' : 'warn';
 
     const selectedMetric = selectedVisPersona
       ? metrics.find((metric) => metric.id.toLowerCase() === selectedVisPersona.toLowerCase())
@@ -1381,13 +1427,39 @@ export default function App() {
 
     return (
       <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="flex-1 border-b border-[#44475a] relative flex flex-col bg-[#282a36] overflow-hidden p-8">
+        <div className="grid grid-cols-4 gap-[2px] bg-[#1e1e1e] border-b border-[#1e1e1e]">
+          <KpiCard
+            variant="hero"
+            eyebrow="Avg Sentiment"
+            value={avgSentiment}
+            delta={sentimentDelta}
+          />
+          <KpiCard
+            eyebrow="Avg Persuasion"
+            value={avgPersuasion}
+            delta={`${metrics.length} personas scored`}
+            deltaTone="muted"
+          />
+          <KpiCard
+            eyebrow="Avg Passion"
+            value={avgPassion}
+            delta={avgPassion > 60 ? 'HIGH ENGAGEMENT' : 'STEADY'}
+            deltaTone={avgPassion > 60 ? 'ok' : 'muted'}
+          />
+          <KpiCard
+            eyebrow="Signal"
+            value={metrics.length}
+            delta={sentimentDelta}
+            deltaTone={sentimentTone}
+          />
+        </div>
+        <div className="flex-1 border-b border-[#1e1e1e] relative flex flex-col bg-[#111111] overflow-hidden p-8">
           <div className="flex justify-between items-center mb-4 z-10">
-            <h3 className="text-sm font-bold text-[#bd93f9] tracking-widest">MULTI-DIMENSIONAL ANALYSIS</h3>
-            <div className="flex bg-[#44475a] rounded-sm overflow-hidden">
+            <h3 className="text-sm font-bold text-[#f5f500] tracking-widest">MULTI-DIMENSIONAL ANALYSIS</h3>
+            <div className="flex bg-[#1e1e1e] rounded-none overflow-hidden">
               <button
                 className={`px-3 py-1 text-xs font-bold flex items-center gap-2 ${
-                  visMode === 'analytical' ? 'bg-[#bd93f9] text-[#282a36]' : 'text-[#f8f8f2] hover:bg-[#6272a4]'
+                  visMode === 'analytical' ? 'bg-[#f5f500] text-[#111111]' : 'text-[#ffffff] hover:bg-[#444444]'
                 }`}
                 onClick={() => setVisMode('analytical')}
               >
@@ -1396,7 +1468,7 @@ export default function App() {
               </button>
               <button
                 className={`px-3 py-1 text-xs font-bold flex items-center gap-2 ${
-                  visMode === 'cinematic' ? 'bg-[#bd93f9] text-[#282a36]' : 'text-[#f8f8f2] hover:bg-[#6272a4]'
+                  visMode === 'cinematic' ? 'bg-[#f5f500] text-[#111111]' : 'text-[#ffffff] hover:bg-[#444444]'
                 }`}
                 onClick={() => setVisMode('cinematic')}
               >
@@ -1408,12 +1480,12 @@ export default function App() {
 
           {visMode === 'cinematic' ? (
             <div className="flex-1 relative flex items-center justify-center">
-              <div className="absolute top-4 right-4 flex bg-[#44475a] rounded-sm overflow-hidden z-20">
+              <div className="absolute top-4 right-4 flex bg-[#1e1e1e] rounded-none overflow-hidden z-20">
                 {(['iso', 'top', 'front', 'side'] as const).map((view) => (
                   <button
                     key={view}
                     className={`px-2 py-1 text-[10px] font-bold uppercase ${
-                      cameraView === view ? 'bg-[#bd93f9] text-[#282a36]' : 'text-[#f8f8f2] hover:bg-[#6272a4]'
+                      cameraView === view ? 'bg-[#f5f500] text-[#111111]' : 'text-[#ffffff] hover:bg-[#444444]'
                     }`}
                     onClick={() => setCameraView(view)}
                   >
@@ -1424,7 +1496,7 @@ export default function App() {
 
               <div className="relative w-full max-w-lg aspect-square perspective-1200 flex items-center justify-center">
                 <div
-                  className="relative w-3/4 h-3/4 preserve-3d border border-[#bd93f9]/30 bg-[#bd93f9]/5 transition-transform duration-1000"
+                  className="relative w-3/4 h-3/4 preserve-3d border border-[#f5f500]/30 bg-[#f5f500]/5 transition-transform duration-1000"
                   style={{
                     transform:
                       cameraView === 'iso'
@@ -1436,23 +1508,23 @@ export default function App() {
                             : 'rotateX(90deg) rotateZ(-90deg)',
                   }}
                 >
-                  <div className="absolute inset-0 bg-[linear-gradient(to_right,#bd93f91a_1px,transparent_1px),linear-gradient(to_bottom,#bd93f91a_1px,transparent_1px)] bg-[size:20%_20%] overflow-hidden">
-                    <div className="absolute top-0 left-0 w-full h-[20%] bg-gradient-to-b from-transparent via-[#bd93f9]/20 to-transparent animate-scanline pointer-events-none" />
+                  <div className="absolute inset-0 bg-[linear-gradient(to_right,#f5f5001a_1px,transparent_1px),linear-gradient(to_bottom,#f5f5001a_1px,transparent_1px)] bg-[size:20%_20%] overflow-hidden">
+                    <div className="absolute top-0 left-0 w-full h-[20%] bg-gradient-to-b from-transparent via-[#f5f500]/20 to-transparent animate-scanline pointer-events-none" />
                   </div>
 
-                  <div className="absolute -bottom-8 left-0 w-full flex justify-between text-[10px] text-[#bd93f9] font-bold tracking-widest">
+                  <div className="absolute -bottom-8 left-0 w-full flex justify-between text-[10px] text-[#f5f500] font-bold tracking-widest">
                     <span>-100</span>
                     <span>SENTIMENT (X)</span>
                     <span>100</span>
                   </div>
-                  <div className="absolute top-0 -left-8 h-full flex flex-col justify-between items-center text-[10px] text-[#bd93f9] font-bold tracking-widest">
+                  <div className="absolute top-0 -left-8 h-full flex flex-col justify-between items-center text-[10px] text-[#f5f500] font-bold tracking-widest">
                     <span>100</span>
                     <span className="-rotate-90 whitespace-nowrap">PERSUASION (Y)</span>
                     <span>0</span>
                   </div>
 
-                  <div className="absolute left-0 bottom-0 w-[2px] h-[150px] bg-[#bd93f9]/50 origin-bottom rotate-x-[-90deg]">
-                    <div className="absolute -top-6 left-2 text-[10px] text-[#bd93f9] font-bold tracking-widest whitespace-nowrap">
+                  <div className="absolute left-0 bottom-0 w-[2px] h-[150px] bg-[#f5f500]/50 origin-bottom rotate-x-[-90deg]">
+                    <div className="absolute -top-6 left-2 text-[10px] text-[#f5f500] font-bold tracking-widest whitespace-nowrap">
                       PASSION (Z)
                     </div>
                   </div>
@@ -1518,12 +1590,12 @@ export default function App() {
                           }}
                         >
                           <div
-                            className={`w-3 h-3 rounded-full bg-current shadow-[0_0_10px_currentColor] transition-all ${
+                            className={`w-3 h-3 rounded-full bg-current  transition-all ${
                               isSelected ? 'scale-0' : 'group-hover:scale-0'
                             }`}
                           />
                           <div
-                            className={`absolute p-1.5 rounded-sm bg-[#282a36] border border-current shadow-[0_0_15px_currentColor] transition-all duration-300 ${
+                            className={`absolute p-1.5 rounded-none bg-[#111111] border border-current  transition-all duration-300 ${
                               isSelected
                                 ? 'scale-125 opacity-100'
                                 : 'scale-50 opacity-0 group-hover:scale-100 group-hover:opacity-100'
@@ -1532,7 +1604,7 @@ export default function App() {
                             <Icon className="w-4 h-4" />
                           </div>
                           <div
-                            className={`absolute top-full mt-2 text-[9px] font-bold bg-[#282a36]/80 px-1 rounded whitespace-nowrap transition-all duration-300 ${
+                            className={`absolute top-full mt-2 text-[9px] font-bold bg-[#111111]/80 px-1 rounded whitespace-nowrap transition-all duration-300 ${
                               isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
                             }`}
                           >
@@ -1549,19 +1621,19 @@ export default function App() {
             <div className="flex-1 relative w-full h-full min-h-[300px]">
               <ResponsiveContainer width="100%" height="100%">
                 <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#44475a" />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1e1e1e" />
                   <XAxis
                     type="number"
                     dataKey="sentiment"
                     name="Sentiment"
                     domain={[-100, 100]}
-                    stroke="#f8f8f2"
-                    tick={{ fill: '#f8f8f2' }}
+                    stroke="#ffffff"
+                    tick={{ fill: '#ffffff' }}
                     label={{
                       value: 'Sentiment (-100 to 100)',
                       position: 'insideBottom',
                       offset: -10,
-                      fill: '#bd93f9',
+                      fill: '#f5f500',
                     }}
                   />
                   <YAxis
@@ -1569,13 +1641,13 @@ export default function App() {
                     dataKey="passion"
                     name="Passion"
                     domain={[0, 100]}
-                    stroke="#f8f8f2"
-                    tick={{ fill: '#f8f8f2' }}
+                    stroke="#ffffff"
+                    tick={{ fill: '#ffffff' }}
                     label={{
                       value: 'Passion (0 to 100)',
                       angle: -90,
                       position: 'insideLeft',
-                      fill: '#bd93f9',
+                      fill: '#f5f500',
                     }}
                   />
                   <ZAxis type="number" dataKey="persuasion" range={[100, 1000]} name="Persuasion" />
@@ -1593,22 +1665,22 @@ export default function App() {
                         const visuals = getPersonaVisuals(persona.id);
                         const Icon = visuals.icon;
                         return (
-                          <div className="bg-[#282a36] border border-[#bd93f9] p-3 rounded-sm shadow-lg">
+                          <div className="bg-[#111111] border border-[#f5f500] p-3 rounded-none ">
                             <div className={`font-bold flex items-center gap-2 mb-2 ${visuals.color}`}>
                               <Icon className="w-4 h-4" />
                               {persona.name}
                             </div>
-                            <div className="text-xs text-[#f8f8f2]">Sentiment: {data.sentiment}</div>
-                            <div className="text-xs text-[#f8f8f2]">Passion: {data.passion}</div>
-                            <div className="text-xs text-[#f8f8f2]">Persuasion: {data.persuasion}</div>
+                            <div className="text-xs text-[#ffffff]">Sentiment: {data.sentiment}</div>
+                            <div className="text-xs text-[#ffffff]">Passion: {data.passion}</div>
+                            <div className="text-xs text-[#ffffff]">Persuasion: {data.persuasion}</div>
                           </div>
                         );
                       }
                       return null;
                     }}
                   />
-                  <ReferenceLine x={0} stroke="#6272a4" />
-                  <ReferenceLine y={50} stroke="#6272a4" />
+                  <ReferenceLine x={0} stroke="#444444" />
+                  <ReferenceLine y={50} stroke="#444444" />
                   <Scatter
                     name="Personas"
                     data={metrics}
@@ -1619,7 +1691,7 @@ export default function App() {
                         (item) => item.id.toLowerCase() === metric.id.toLowerCase(),
                       );
                       const isSelected = selectedVisPersona === metric.id;
-                      const fill = persona ? toVisualColor(getPersonaVisuals(persona.id).color) : '#f8f8f2';
+                      const fill = persona ? toVisualColor(getPersonaVisuals(persona.id).color) : '#ffffff';
                       return (
                         <Cell
                           key={`cell-${index}`}
@@ -1640,10 +1712,10 @@ export default function App() {
           )}
         </div>
 
-        <div className="h-64 bg-[#282a36] flex">
+        <div className="h-64 bg-[#111111] flex">
           {selectedMetric && selectedPersona ? (
             <>
-              <div className="w-1/3 border-r border-[#44475a] p-6 flex flex-col gap-4">
+              <div className="w-1/3 border-r border-[#1e1e1e] p-6 flex flex-col gap-4">
                 <div className="flex items-center gap-3">
                   {(() => {
                     const visuals = getPersonaVisuals(selectedPersona.id);
@@ -1657,35 +1729,35 @@ export default function App() {
                   })()}
                 </div>
                 <div className="grid grid-cols-2 gap-4 mt-2">
-                  <div className="bg-[#44475a] p-3 rounded-sm">
-                    <div className="text-[10px] text-[#bd93f9] uppercase">Sentiment</div>
-                    <div className="text-xl font-bold text-[#f8f8f2]">{selectedMetric.sentiment}</div>
+                  <div className="bg-[#1e1e1e] p-3 rounded-none">
+                    <div className="text-[10px] text-[#f5f500] uppercase">Sentiment</div>
+                    <div className="text-xl font-bold text-[#ffffff]">{selectedMetric.sentiment}</div>
                   </div>
-                  <div className="bg-[#44475a] p-3 rounded-sm">
-                    <div className="text-[10px] text-[#bd93f9] uppercase">Persuasion</div>
-                    <div className="text-xl font-bold text-[#f8f8f2]">{selectedMetric.persuasion}</div>
+                  <div className="bg-[#1e1e1e] p-3 rounded-none">
+                    <div className="text-[10px] text-[#f5f500] uppercase">Persuasion</div>
+                    <div className="text-xl font-bold text-[#ffffff]">{selectedMetric.persuasion}</div>
                   </div>
-                  <div className="bg-[#44475a] p-3 rounded-sm col-span-2">
-                    <div className="text-[10px] text-[#bd93f9] uppercase">Passion</div>
-                    <div className="text-xl font-bold text-[#f8f8f2]">{selectedMetric.passion}</div>
+                  <div className="bg-[#1e1e1e] p-3 rounded-none col-span-2">
+                    <div className="text-[10px] text-[#f5f500] uppercase">Passion</div>
+                    <div className="text-xl font-bold text-[#ffffff]">{selectedMetric.passion}</div>
                   </div>
                 </div>
               </div>
               <div className="flex-1 p-6 flex flex-col gap-2 overflow-y-auto custom-scrollbar">
-                <h3 className="text-xs text-[#bd93f9] uppercase tracking-wider mb-2">Transcript Filter</h3>
+                <h3 className="text-xs text-[#f5f500] uppercase tracking-wider mb-2">Transcript Filter</h3>
                 {personaMessages.length > 0 ? (
                   personaMessages.map((message) => (
-                    <div key={message.id} className="bg-[#44475a] p-3 rounded-sm text-sm text-[#f8f8f2]">
+                    <div key={message.id} className="bg-[#1e1e1e] p-3 rounded-none text-sm text-[#ffffff]">
                       "{message.text}"
                     </div>
                   ))
                 ) : (
-                  <div className="text-[#6272a4] text-sm italic">No messages recorded for this spark.</div>
+                  <div className="text-[#444444] text-sm italic">No messages recorded for this spark.</div>
                 )}
               </div>
             </>
           ) : (
-            <div className="flex-1 flex items-center justify-center text-[#6272a4]">
+            <div className="flex-1 flex items-center justify-center text-[#444444]">
               Select a node in the graph to view breakdown.
             </div>
           )}
@@ -1695,39 +1767,39 @@ export default function App() {
   };
 
   const renderSettingsTab = () => (
-    <div className="flex-1 p-6 bg-[#282a36] flex flex-col gap-6 overflow-y-auto custom-scrollbar">
-      <h2 className="text-xl text-[#50fa7b] font-bold border-b border-[#44475a] pb-2">Runtime Settings</h2>
+    <div className="flex-1 p-6 bg-[#111111] flex flex-col gap-6 overflow-y-auto custom-scrollbar">
+      <h2 className="text-xl text-[#22c55e] font-bold border-b border-[#1e1e1e] pb-2">Runtime Settings</h2>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-4xl">
-        <div className="bg-[#44475a] rounded-sm p-4">
-          <div className="text-xs text-[#bd93f9] uppercase tracking-wider mb-2">Provider</div>
-          <div className="text-[#f8f8f2] text-sm">{health?.provider ?? 'MindsAI'}</div>
+        <div className="bg-[#1e1e1e] rounded-none p-4">
+          <div className="text-xs text-[#f5f500] uppercase tracking-wider mb-2">Provider</div>
+          <div className="text-[#ffffff] text-sm">{health?.provider ?? 'MindsAI'}</div>
         </div>
-        <div className="bg-[#44475a] rounded-sm p-4">
-          <div className="text-xs text-[#bd93f9] uppercase tracking-wider mb-2">API Status</div>
-          <div className="text-[#f8f8f2] text-sm">
+        <div className="bg-[#1e1e1e] rounded-none p-4">
+          <div className="text-xs text-[#f5f500] uppercase tracking-wider mb-2">API Status</div>
+          <div className="text-[#ffffff] text-sm">
             {health?.configured ? 'Configured' : 'Missing MINDS_API_KEY'}
           </div>
         </div>
-        <div className="bg-[#44475a] rounded-sm p-4">
-          <div className="text-xs text-[#bd93f9] uppercase tracking-wider mb-2">Base URL</div>
-          <div className="text-[#f8f8f2] text-sm break-all">
+        <div className="bg-[#1e1e1e] rounded-none p-4">
+          <div className="text-xs text-[#f5f500] uppercase tracking-wider mb-2">Base URL</div>
+          <div className="text-[#ffffff] text-sm break-all">
             {health?.apiBaseUrl ?? 'https://getminds.ai/api/v1'}
           </div>
         </div>
-        <div className="bg-[#44475a] rounded-sm p-4">
-          <div className="text-xs text-[#bd93f9] uppercase tracking-wider mb-2">Max Minds / Group</div>
-          <div className="text-[#f8f8f2] text-sm">{maxPanelMinds}</div>
+        <div className="bg-[#1e1e1e] rounded-none p-4">
+          <div className="text-xs text-[#f5f500] uppercase tracking-wider mb-2">Max Minds / Group</div>
+          <div className="text-[#ffffff] text-sm">{maxPanelMinds}</div>
         </div>
-        <div className="bg-[#44475a] rounded-sm p-4">
-          <div className="text-xs text-[#bd93f9] uppercase tracking-wider mb-2">Analyst Spark</div>
-          <div className="text-[#f8f8f2] text-sm break-all">
+        <div className="bg-[#1e1e1e] rounded-none p-4">
+          <div className="text-xs text-[#f5f500] uppercase tracking-wider mb-2">Analyst Spark</div>
+          <div className="text-[#ffffff] text-sm break-all">
             {analystSpark?.sparkId ?? 'Created on first analysis run'}
           </div>
         </div>
-        <div className="bg-[#44475a] rounded-sm p-4">
-          <div className="text-xs text-[#bd93f9] uppercase tracking-wider mb-2">Persistence</div>
-          <div className="text-[#f8f8f2] text-sm">localStorage v{STORAGE_VERSION}</div>
+        <div className="bg-[#1e1e1e] rounded-none p-4">
+          <div className="text-xs text-[#f5f500] uppercase tracking-wider mb-2">Persistence</div>
+          <div className="text-[#ffffff] text-sm">localStorage v{STORAGE_VERSION}</div>
         </div>
       </div>
 
@@ -1745,26 +1817,28 @@ export default function App() {
   );
 
   return (
-    <div className="h-screen w-full bg-[#1e1e2e] p-4 md:p-8 font-mono text-[#f8f8f2] flex flex-col overflow-hidden">
-      <div className="flex-1 border border-[#44475a] bg-[#282a36] flex flex-col rounded-sm overflow-hidden shadow-2xl">
-        <div className="flex items-center border-b border-[#44475a] bg-[#1e1e2e] text-sm select-none">
-          <div className="flex gap-2 px-4 py-2 border-r border-[#44475a]">
-            <div className="w-3 h-3 rounded-full bg-[#ff5555]" />
-            <div className="w-3 h-3 rounded-full bg-[#f1fa8c]" />
-            <div className="w-3 h-3 rounded-full bg-[#50fa7b]" />
+    <>
+      <AnimatedBackground />
+      <div className="h-screen w-full bg-transparent p-4 md:p-8 font-sans text-[#ffffff] flex flex-col overflow-hidden relative z-10">
+      <div className="flex-1 border border-[#1e1e1e] bg-[#111111]/85 backdrop-blur-md flex flex-col rounded-none overflow-hidden relative z-10">
+        <div className="flex items-center border-b border-[#1e1e1e] bg-[#0a0a0a] text-sm select-none">
+          <div className="flex items-center px-4 py-2 border-r border-[#1e1e1e]">
+            <Logo />
           </div>
           {(['simulation', 'products', 'personas', 'groups', 'visualization', 'settings'] as Tab[]).map((tab) => (
             <div
               key={tab}
               onClick={() => setActiveTab(tab)}
-              className={`px-4 py-2 border-r border-[#44475a] cursor-pointer capitalize ${
-                activeTab === tab ? 'text-[#ff79c6] bg-[#282a36]' : 'text-[#6272a4] hover:text-[#f8f8f2]'
+              className={`px-4 py-2 border-r border-[#1e1e1e] cursor-pointer text-[11px] tracking-[0.12em] uppercase font-bold transition-colors ${
+                activeTab === tab
+                  ? 'text-[#0a0a0a] bg-[#f5f500]'
+                  : 'text-[#555555] hover:text-[#ffffff] hover:bg-[#141414]'
               }`}
             >
               {tab}
             </div>
           ))}
-          <div className="px-4 py-2 text-[#6272a4] flex-1 text-right">&gt; ./society-sim-os</div>
+          <div className="px-4 py-2 text-[#444444] flex-1 text-right tracking-[0.08em] text-[11px]">&gt; ./society-sim-os</div>
         </div>
 
         <div className="flex-1 flex overflow-hidden">
@@ -1776,24 +1850,25 @@ export default function App() {
           {activeTab === 'settings' && renderSettingsTab()}
         </div>
 
-        <div className="flex text-xs font-bold border-t border-[#44475a] bg-[#1e1e2e]">
-          <div className={`px-4 py-1 ${isSimulating ? 'bg-[#ff5555] text-[#f8f8f2]' : 'bg-[#ff79c6] text-[#282a36]'}`}>
+        <div className="flex text-xs font-bold border-t border-[#1e1e1e] bg-[#0a0a0a]">
+          <div className={`px-4 py-1 ${isSimulating ? 'bg-[#ef4444] text-[#ffffff]' : 'bg-[#f5f500] text-[#111111]'}`}>
             {isSimulating ? 'SIMULATING' : 'STATUS'}
           </div>
-          <div className="px-4 py-1 bg-[#44475a] text-[#f8f8f2] flex-1 truncate font-normal">
+          <div className="px-4 py-1 bg-[#1e1e1e] text-[#ffffff] flex-1 truncate font-normal">
             {health?.configured
               ? isSimulating
                 ? 'Streaming simulation output...'
                 : 'Ready'
               : 'Missing MINDS_API_KEY on server'}
           </div>
-          <div className="px-4 py-1 bg-[#bd93f9] text-[#282a36]">UTF-8</div>
-          <div className="px-4 py-1 bg-[#8be9fd] text-[#282a36] flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-[#282a36]" />
+          <div className="px-4 py-1 bg-[#f5f500] text-[#111111]">UTF-8</div>
+          <div className="px-4 py-1 bg-[#00e5ff] text-[#111111] flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-[#111111]" />
             MindsAI
           </div>
         </div>
       </div>
     </div>
+    </>
   );
 }
