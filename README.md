@@ -1,8 +1,6 @@
 # SocietySimOs
 
-**Synthetic market research powered by real human conversations.**
-
-Run AI focus groups trained on actual Reddit threads and tweets — not fictional personas.
+Synthetic market research powered by real ICP conversations, MindsAI Sparks, and live focus-group simulations.
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.8-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![React](https://img.shields.io/badge/React-19-61dafb?logo=react)](https://react.dev/)
@@ -10,183 +8,204 @@ Run AI focus groups trained on actual Reddit threads and tweets — not fictiona
 [![Minds AI](https://img.shields.io/badge/Minds_AI-Sparks-purple)](https://getminds.ai)
 [![Apify](https://img.shields.io/badge/Apify-Scraper-orange)](https://apify.com)
 
-</div>
-
----
-
 ## What it does
 
-SocietySimOs is a terminal-style focus group simulator. Enter a product, click one button, and watch 10 AI personas — trained on real social media conversations about your market — debate it in real time.
+SocietySimOs is a terminal-style research cockpit for testing products with synthetic focus groups.
 
-**The old way:** 10 hardcoded fictional personas (Chad the Biohacker, Susan the Mom, etc.) powered by a generic LLM prompt.
+The app can:
 
-**The new way:** Scrape Reddit and Twitter for real ICP conversations → extract buyer archetypes from the data → train Minds AI Sparks on that data → run a live simulation → get sentiment, persuasion, and passion metrics per persona.
+1. Scrape live ICP conversations from Reddit and X/Twitter with Apify.
+2. Synthesize buyer personas from that corpus.
+3. Create and enrich MindsAI Sparks for each persona.
+4. Run live focus-group simulations and structured analysis.
+5. Run batch panels with baseline, relay, and aggregate synthesis.
 
----
+The output is meant to answer two questions quickly:
 
-## Demo flow
+- What does each persona think individually?
+- What does the overall market consensus look like after multiple groups compare notes?
 
-```
-1. Enter your product + ICP keyword (e.g. "sales automation SaaS")
-2. Click "SIMULATE FROM REAL DATA"
-3. Watch the terminal:
-   → Apify scrapes Reddit (r/sales, r/SaaS, r/startups) + Twitter
-   → 10 Minds AI Sparks created, each trained on real ICP posts
-   → Live focus group simulation streams in real time
-   → Analyst Spark generates structured metrics
-4. Go to Visualization → scatter plot of sentiment × passion × persuasion
-```
+## Core workflows
 
----
+- `Simulation`: run one saved group against one saved product.
+- `Batch Runs`: run multiple saved groups in parallel, then synthesize a global relay and final aggregate read.
+- `Visualization`: inspect single-run metrics or batch `baseline`, `relay`, and `aggregate` phases.
+- `Simulate From Real Data`: build personas and Sparks from scraped ICP conversations instead of relying only on default local personas.
 
 ## Architecture
 
-```
+```text
 Browser (React + Vite)
-    │
-    ├── /api/icp/generate          ← Main pipeline endpoint
-    │       │
-    │       ├── Apify Actors
-    │       │     ├── trudax~reddit-scraper-lite  → Reddit posts
-    │       │     └── apidojo~tweet-scraper       → Tweets
-    │       │
-    │       ├── Keyword extraction from scraped posts
-    │       │
-    │       └── Minds AI (via MindsClient)
-    │             ├── POST /sparks (mode: keywords) × 10  → train Sparks
-    │             └── POST /sparks/{id}/knowledge × 10    → upload ICP posts
-    │
-    ├── /api/simulations/panel-run  ← SSE streaming simulation
-    │       └── Minds AI completeSpark() per persona per round
-    │
-    └── /api/simulations/analyze    ← Structured metrics
-            └── Analyst Spark → JSON { summary, metrics[] }
+    |
+    +-- /api/icp/generate
+    |      |
+    |      +-- Apify actors
+    |      |     +-- trudax~reddit-scraper-lite
+    |      |     +-- apidojo~tweet-scraper
+    |      |
+    |      +-- persona synthesis
+    |      +-- MindsAI spark creation
+    |      +-- MindsAI knowledge upload
+    |
+    +-- /api/minds/*
+    |      +-- spark and panel sync
+    |
+    +-- /api/simulations/panel-run
+    |      +-- live focus-group turn streaming
+    |
+    +-- /api/simulations/batch-run
+           +-- baseline -> consensus -> relay -> aggregate
 ```
 
-**Stack:**
-- **Frontend:** React 19, Vite, Tailwind CSS, Recharts, Lucide React, Geist font
-- **Backend:** Express 4 (BFF — browser never calls external APIs directly)
-- **AI Personas:** Minds AI (Sparks API, keywords mode, knowledge upload, completions)
-- **Data:** Apify (Reddit Scraper Lite, Tweet Scraper V2)
-
----
-
-## Sponsors
-
-### Apify
-We use two Apify Actors to scrape real ICP conversations:
-
-| Actor | ID | Purpose |
-|---|---|---|
-| Reddit Scraper Lite | `trudax~reddit-scraper-lite` | Scrapes up to 20 posts per keyword across all of Reddit |
-| Tweet Scraper V2 | `apidojo~tweet-scraper` | Scrapes up to 20 tweets per keyword |
-
-The scraped posts are formatted into a structured knowledge text and uploaded to each Minds AI Spark. This gives each persona the real vocabulary, pain points, and language patterns of your actual ICP — not what an LLM imagines they sound like.
-
-### Minds AI
-We use Minds AI as the persona engine:
-
-| Endpoint | Usage |
-|---|---|
-| `POST /sparks` (mode: keywords) | Creates 10 Sparks, each auto-trained via Tavily + YouTube on archetype-specific keywords |
-| `POST /sparks/{id}/knowledge` | Uploads scraped Apify posts as a `.txt` knowledge file to each Spark |
-| `POST /sparks/{id}/completion` | Powers each persona's turn in the focus group simulation |
-| Analyst Spark + structured output | Generates `{ summary, metrics[] }` with sentiment/persuasion/passion per persona |
-
----
-
-## 10 ICP Archetypes
-
-Each run generates these 10 archetypes, but their actual behavior is trained on your specific scraped data:
-
-| Persona | Archetype | Discipline |
-|---|---|---|
-| The Skeptic | Data-Driven Doubter | Analytics |
-| The Champion | Internal Evangelist | Product Management |
-| The Budget Owner | ROI Gatekeeper | Finance |
-| The End User | Daily Practitioner | Operations |
-| The Executive | Strategic Buyer | Executive Leadership |
-| The Tech Lead | Technical Evaluator | Engineering |
-| The Early Adopter | Innovation Seeker | Growth |
-| The Traditionalist | Status Quo Defender | Sales |
-| The Pragmatist | Practical Implementer | Customer Success |
-| The Influencer | Peer Opinion Leader | Marketing |
-
----
+The app runs as an Express BFF with a Vite frontend. The browser talks only to same-origin `/api/*` routes, so `MINDS_API_KEY` and `APIFY_API_KEY` stay server-side.
 
 ## Setup
 
 ### Prerequisites
+
 - Node.js 18+
-- Minds AI account + API key → [getminds.ai](https://getminds.ai)
-- Apify account + API key → [apify.com](https://apify.com)
+- A MindsAI account and API key
+- An Apify account and API key
 
 ### Install
 
 ```bash
-git clone https://github.com/AlejandroSpot2/SocietySimOs.git
-cd SocietySimOs
 npm install
 ```
 
-### Configure
+### Configure environment
 
-```bash
-cp .env.example .env
-```
-
-Edit `.env`:
+Create a `.env` file in the project root:
 
 ```env
-MINDS_API_KEY=minds_your_key_here
-APIFY_API_KEY=apify_api_your_key_here
+MINDS_API_KEY=your_minds_key
+APIFY_API_KEY=your_apify_key
+MINDS_API_BASE_URL=https://getminds.ai/api/v1
+MINDS_MAX_PANEL_MINDS=5
+PORT=3000
 ```
 
-### Run
+Notes:
+
+- `MINDS_API_KEY` is required for simulations and sync operations.
+- `APIFY_API_KEY` is required for `Simulate From Real Data`.
+- `MINDS_MAX_PANEL_MINDS` defaults to `5`.
+- `PORT` defaults to `3000`.
+
+### Run locally
 
 ```bash
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000)
+Open [http://localhost:3000](http://localhost:3000).
 
----
+## Using MindsAI
 
-## Usage
+MindsAI is the persona engine and simulation runtime.
 
-### Simulate from real data (recommended)
+### Where it is used
 
-1. Go to **Products** tab → enter your product details + ICP keyword
-2. Go to **Simulation** tab → click **SIMULATE FROM REAL DATA**
-3. The terminal logs every step of the pipeline in real time
-4. After completion → go to **Visualization** tab for metrics
+- `server/minds-client.ts`: typed client for the MindsAI API.
+- `server/routes/icp.ts`: creates persona Sparks and uploads knowledge files.
+- `server/routes/minds.ts`: keeps local personas and groups in sync with remote Sparks and panels.
+- `server/routes/simulations.ts`: runs panel conversations, analysis, and batch synthesis.
+- `server/simulation-core.ts`: shared batch synthesis and aggregate logic.
 
-### Simulate with default personas (fallback)
+### What SocietySimOs does with MindsAI
 
-1. Go to **Personas** tab → configure the 10 default personas
-2. Go to **Groups** tab → create a group
-3. Go to **Simulation** tab → select group + product → click **START SIM**
+1. Creates one Spark per synthesized persona.
+2. Updates each Spark with generated prompt, tags, description, and discipline.
+3. Uploads the scraped ICP corpus as knowledge so each Spark speaks with the market's language instead of a generic archetype.
+4. Uses Sparks during live turns in `panel-run` and batch phases.
+5. Uses structured analysis to produce summaries, persona metrics, and aggregate synthesis.
 
----
+### Practical usage notes
+
+- If `MINDS_API_KEY` is missing, simulations are disabled but local editing still works.
+- Personas generated from real data preserve remote metadata like `sparkId`, `fingerprint`, and `lastSyncedAt`.
+- Batch runs use MindsAI for both group-level analysis and final aggregate synthesis.
+
+## Using Apify
+
+Apify powers the real-data enrichment path behind `Simulate From Real Data`.
+
+### Where it is used
+
+- `server/routes/icp.ts`
+
+### Actors currently used
+
+- `trudax~reddit-scraper-lite`
+- `apidojo~tweet-scraper`
+
+### What SocietySimOs does with Apify
+
+1. Scrapes Reddit posts for the product keyword or ICP keyword.
+2. Scrapes X/Twitter posts for the same market language.
+3. Normalizes the corpus into `RawPost[]`.
+4. Builds a knowledge document from the corpus.
+5. Synthesizes personas from the corpus before Spark creation.
+6. Uploads the same corpus into each MindsAI Spark as knowledge.
+
+### Practical usage notes
+
+- If `APIFY_API_KEY` is missing, `/api/icp/generate` returns `503`.
+- If live scraping returns too little data, the pipeline falls back to demo posts so the flow still works end-to-end.
+- The current scraper limits are tuned for fast exploratory runs, not deep research crawls.
+
+## Typical usage
+
+### Single group simulation
+
+1. Add or select a product.
+2. Add or select a group.
+3. Run `START GROUP RUN`.
+4. Review the transcript and structured visualization.
+
+### Simulate from real data
+
+1. Set a product and ICP keyword.
+2. Click `SIMULATE FROM REAL DATA`.
+3. Apify scrapes live ICP conversations.
+4. The backend synthesizes personas and creates MindsAI Sparks.
+5. The personas become available for simulation and visualization.
+
+### Batch runs
+
+1. Choose a saved product.
+2. Select multiple saved groups.
+3. Start `BATCH RUN`.
+4. Inspect:
+   - `baseline` for direct group reactions
+   - `relay` for post-consensus reactions
+   - `aggregate` for overall market consensus and cross-group comparison
+
+## Validation
+
+- Type-check: `npm run lint`
+- Tests: `npm run test`
+- Production build: `npm run build`
 
 ## Project structure
 
-```
-/
-├── src/
-│   ├── App.tsx                    ← Main React app (all UI logic)
-│   ├── types.ts                   ← Shared TypeScript interfaces
-│   ├── components/ui/             ← UI components (Logo, KpiCard, AnimatedBackground, etc.)
-│   └── theme/                     ← Design tokens (personas.ts, charts.ts)
-├── server/
-│   ├── index.ts                   ← Express + Vite server entry point
-│   ├── config.ts                  ← Environment config
-│   ├── minds-client.ts            ← Minds AI API client
-│   └── routes/
-│       ├── icp.ts                 ← ICP pipeline (Apify + Minds AI)
-│       ├── minds.ts               ← Spark + Panel sync
-│       ├── simulations.ts         ← Panel run (SSE) + analyze
-│       └── health.ts              ← Health check
-├── .env.example
-└── package.json
+```text
+src/
+  App.tsx                  Main React app and UI state
+  types.ts                 Shared frontend and backend types
+  lib/
+    api.ts                 API helpers
+    metrics.ts             Metric normalization helpers
+    storage.ts             Local persistence and migrations
+
+server/
+  index.ts                 Express + Vite entrypoint
+  config.ts                Environment parsing
+  minds-client.ts          MindsAI client
+  simulation-core.ts       Batch synthesis and shared simulation logic
+  routes/
+    icp.ts                 Apify scrape + persona synthesis + Spark creation
+    minds.ts               Spark and panel sync endpoints
+    simulations.ts         Single run, batch run, and analysis endpoints
+    health.ts              Health and config status
 ```

@@ -1,11 +1,32 @@
 import { Router } from 'express';
-import type { Response } from 'express';
-import type { Group, PanelStreamEvent, PersonaState, Product, RemoteSparkRef } from '../../src/types';
-import { getServerConfig } from '../config';
-import { MindsApiError, MindsClient } from '../minds-client';
-import { hashFingerprint, parseJsonSafely } from '../utils';
+import type { RequestHandler, Response } from 'express';
+import type {
+  BatchRunConfig,
+  BatchRunFailure,
+  BatchRunRecord,
+  BatchRunStatus,
+  BatchRunStreamEvent,
+  Group,
+  GroupAnalysis,
+  GroupPhaseResult,
+  GroupRunStreamEvent,
+  PersonaState,
+  Product,
+  RemoteSparkRef,
+} from '../../src/types';
+import { getServerConfig, type ServerConfig } from '../config';
+import { MindsApiError, MindsClient, type MindsClientLike } from '../minds-client';
+import {
+  analyzeGroupTranscript,
+  buildFinalBatchAggregate,
+  buildBaselineConsensus,
+  clampConcurrency,
+  ensureAnalystSpark,
+  runGroupDiscussion,
+  runWithConcurrency,
+} from '../simulation-core';
 
-interface PanelRunRequest {
+interface GroupRunRequest {
   group: Group;
   product: Product;
   personas: Array<Pick<PersonaState, 'id' | 'name' | 'remote'>>;
@@ -18,19 +39,20 @@ interface AnalyzeRequest {
   analystSpark?: RemoteSparkRef | null;
 }
 
-interface AnalysisResult {
-  summary: string;
-  metrics: Array<{
-    id: string;
-    sentiment: number;
-    persuasion: number;
-    passion: number;
-  }>;
+interface BatchRunRequest {
+  config: BatchRunConfig;
+  product: Product;
+  groups: Group[];
+  personas: Array<Pick<PersonaState, 'id' | 'name' | 'remote'>>;
 }
 
-interface SparkCompletionResponse {
-  content?: string;
-  parsed?: AnalysisResult;
+interface SimulationsRouterOptions {
+  clientFactory?: () => MindsClientLike;
+  getConfig?: () => ServerConfig;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
 }
 
 function writeSse(response: Response, event: string, data: unknown) {
@@ -38,330 +60,711 @@ function writeSse(response: Response, event: string, data: unknown) {
   response.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
-function extractCompletionText(result: SparkCompletionResponse): string {
-  if (typeof result.content === 'string' && result.content.trim()) {
-    return result.content.trim();
-  }
-
-  return 'No response returned.';
+function streamGroupEvent(response: Response, event: GroupRunStreamEvent) {
+  writeSse(response, 'group', event);
 }
 
-function buildTranscriptSnapshot(lines: string[], limit = 8): string {
-  if (lines.length === 0) {
-    return 'No other participants have spoken yet.';
-  }
-
-  return lines.slice(-limit).join('\n');
+function streamBatchEvent(response: Response, event: BatchRunStreamEvent) {
+  writeSse(response, 'batch', event);
 }
 
-function buildSparkTurnPrompt(
-  product: Product,
+function normalizedMessage(error: unknown, fallback: string): string {
+  if (error instanceof MindsApiError || error instanceof Error) {
+    return error.message;
+  }
+
+  return fallback;
+}
+
+function createFailure(
+  groupId: string,
   groupName: string,
-  participants: string[],
-  transcript: string[],
-  round: number,
-): string {
-  const turnInstruction =
-    round === 1
-      ? 'Give your opening take on the product.'
-      : 'React to the discussion so far and add one new concrete point.';
-
-  return `You are participating in a synthetic focus-group discussion.
-
-Group: ${groupName}
-Participants: ${participants.join(', ')}
-
-Product Name: ${product.name}
-Category: ${product.category}
-Description: ${product.description}
-
-Discussion so far:
-${buildTranscriptSnapshot(transcript)}
-
-Instructions:
-- ${turnInstruction}
-- Stay fully in character.
-- Keep the response to 3 sentences maximum.
-- Be specific and conversational.
-- Do not break character or mention that you are an AI.`;
+  phase: BatchRunFailure['phase'],
+  message: string,
+): BatchRunFailure {
+  return { groupId, groupName, phase, message };
 }
 
-function orderedGroupPersonas(
-  group: Group,
-  personas: Array<Pick<PersonaState, 'id' | 'name' | 'remote'>>,
-): Array<Pick<PersonaState, 'id' | 'name' | 'remote'>> {
-  const personaMap = new Map(personas.map((persona) => [persona.id, persona]));
-  return group.personaIds
-    .map((personaId) => personaMap.get(personaId))
-    .filter(Boolean) as Array<Pick<PersonaState, 'id' | 'name' | 'remote'>>;
-}
-
-async function ensureAnalystSpark(
-  client: MindsClient,
-  analystSpark: RemoteSparkRef | null | undefined,
-): Promise<RemoteSparkRef> {
-  const name = 'Simulation Analyst';
-  const description = 'Structured analyst spark for synthetic focus-group summaries.';
-  const discipline = 'Market Research';
-  const prompt = `You are a rigorous market research analyst.
-
-Return only structured findings.
-Produce a 3-sentence summary and per-persona metrics.
-Never invent persona ids.
-Metrics:
-- sentiment: integer from -100 to 100
-- persuasion: integer from 0 to 100
-- passion: integer from 0 to 100`;
-  const tags = ['analysis', 'market-research', 'simulation'];
-  const fingerprint = hashFingerprint([name, discipline, prompt, tags.join(',')]);
-
-  if (analystSpark?.sparkId && analystSpark.fingerprint === fingerprint) {
-    return analystSpark;
-  }
-
-  let sparkId = analystSpark?.sparkId;
-  if (!sparkId) {
-    const created = await client.createAnalystSpark({
-      name,
-      description,
-      discipline,
-      prompt,
-      tags,
+function respondJsonError(error: unknown, response: Response, fallback = 'Analysis failed.') {
+  if (error instanceof MindsApiError) {
+    response.status(error.status).json({
+      message: error.message,
+      details: error.body,
     });
-    sparkId = created.id;
+    return;
   }
 
-  await client.updateSpark(
-    sparkId,
-    {
-      name,
-      description,
-      discipline,
-      prompt,
-      tags,
-    },
-    'expert',
-  );
+  response.status(500).json({
+    message: normalizedMessage(error, fallback),
+  });
+}
 
+function syntheticGroupForAnalysis(personas: Array<Pick<PersonaState, 'id' | 'name'>>): Group {
   return {
-    sparkId,
-    fingerprint,
-    lastSyncedAt: new Date().toISOString(),
+    id: 'single-run',
+    name: 'Single Run',
+    personaIds: personas.map((persona) => persona.id),
   };
 }
 
-export const simulationsRouter = Router();
+function groupResultsById(results: GroupPhaseResult[]) {
+  return new Map(results.map((result) => [result.groupId, result]));
+}
 
-simulationsRouter.post('/panel-run', async (request, response) => {
-  const config = getServerConfig();
-  if (!config.configured) {
-    response.status(503).json({ message: 'MINDS_API_KEY is not configured on the server.' });
-    return;
+function finalizeStatus(
+  baselineResults: GroupPhaseResult[],
+  relayResults: GroupPhaseResult[],
+  failures: BatchRunFailure[],
+  current: BatchRunStatus = 'running',
+): BatchRunStatus {
+  if (current === 'aborted' || current === 'failed') {
+    return current;
   }
 
-  const body = request.body as PanelRunRequest;
-  if (!body?.product || !body.group || !Array.isArray(body.personas)) {
-    response.status(400).json({ message: 'group, product, and personas are required.' });
-    return;
+  if (baselineResults.length === 0) {
+    return 'failed';
   }
 
-  const orderedPersonas = orderedGroupPersonas(body.group, body.personas);
-  if (orderedPersonas.length === 0) {
-    response.status(400).json({ message: 'Selected group has no synced sparks.' });
-    return;
+  if (failures.length > 0) {
+    return 'completed_with_errors';
   }
 
-  const missingRemote = orderedPersonas.find((persona) => !persona.remote?.sparkId);
-  if (missingRemote) {
-    response.status(400).json({
-      message: `Persona ${missingRemote.name} is missing a synced spark id.`,
-    });
-    return;
+  if (relayResults.length > 0 || baselineResults.length > 0) {
+    return 'completed';
   }
 
-  const client = new MindsClient();
-  const controller = new AbortController();
-  request.on('aborted', () => controller.abort());
-  response.on('close', () => {
-    if (!response.writableEnded) {
-      controller.abort();
+  return current;
+}
+
+function createGroupRunHandler(
+  clientFactory: () => MindsClientLike,
+  getConfigValue: () => ServerConfig,
+): RequestHandler {
+  return async (request, response) => {
+    const config = getConfigValue();
+    if (!config.configured) {
+      response.status(503).json({ message: 'MINDS_API_KEY is not configured on the server.' });
+      return;
     }
-  });
 
-  response.setHeader('Content-Type', 'text/event-stream');
-  response.setHeader('Cache-Control', 'no-cache, no-transform');
-  response.setHeader('Connection', 'keep-alive');
-  response.flushHeaders();
+    const body = request.body as GroupRunRequest;
+    if (!body?.product || !body.group || !Array.isArray(body.personas)) {
+      response.status(400).json({ message: 'group, product, and personas are required.' });
+      return;
+    }
 
-  const transcript: string[] = [];
-  const participantNames = orderedPersonas.map((persona) => persona.name);
+    const missingPersona = body.group.personaIds.find(
+      (personaId) => !body.personas.find((persona) => persona.id === personaId),
+    );
+    if (missingPersona) {
+      response.status(400).json({ message: `Group persona ${missingPersona} is missing from the request.` });
+      return;
+    }
 
-  try {
-    writeSse(response, 'panel', {
-      type: 'system',
-      text: `Running ${orderedPersonas.length} spark(s) for "${body.group.name}".`,
-    } satisfies PanelStreamEvent);
+    const missingRemote = body.group.personaIds.find(
+      (personaId) => !body.personas.find((persona) => persona.id === personaId)?.remote?.sparkId,
+    );
+    if (missingRemote) {
+      response.status(400).json({ message: `Group persona ${missingRemote} is missing a synced remote spark.` });
+      return;
+    }
 
-    for (let round = 1; round <= 2; round += 1) {
-      if (controller.signal.aborted) {
-        throw new Error('Simulation aborted.');
+    const client = clientFactory();
+    const controller = new AbortController();
+    request.on('aborted', () => controller.abort());
+    response.on('close', () => {
+      if (!response.writableEnded) {
+        controller.abort();
       }
+    });
 
-      writeSse(response, 'panel', {
+    response.setHeader('Content-Type', 'text/event-stream');
+    response.setHeader('Cache-Control', 'no-cache, no-transform');
+    response.setHeader('Connection', 'keep-alive');
+    response.flushHeaders();
+
+    try {
+      streamGroupEvent(response, {
         type: 'system',
-        text: `Round ${round}/2`,
-      } satisfies PanelStreamEvent);
+        text: `Running ${body.group.personaIds.length} spark(s) for "${body.group.name}".`,
+      });
 
-      for (const persona of orderedPersonas) {
-        if (controller.signal.aborted) {
-          throw new Error('Simulation aborted.');
-        }
+      const discussion = await runGroupDiscussion({
+        client,
+        group: body.group,
+        product: body.product,
+        personas: body.personas,
+        phase: 'baseline',
+        signal: controller.signal,
+        onMessage: (event) => {
+          streamGroupEvent(response, {
+            type: 'mind_message',
+            mindId: event.mindId,
+            mindName: event.mindName,
+            text: event.text,
+          });
+        },
+      });
 
-        const completion = await client.completeSpark<SparkCompletionResponse>(persona.remote!.sparkId, {
-          messages: [
-            {
-              role: 'user',
-              content: buildSparkTurnPrompt(
-                body.product,
-                body.group.name,
-                participantNames,
-                transcript,
-                round,
-              ),
-            },
-          ],
-        }, controller.signal);
-
-        const text = extractCompletionText(completion);
-        transcript.push(`${persona.name}: ${text}`);
-
-        writeSse(response, 'panel', {
-          type: 'mind_message',
-          mindId: persona.id,
-          mindName: persona.name,
-          text,
-        } satisfies PanelStreamEvent);
+      if (controller.signal.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
       }
+
+      streamGroupEvent(response, {
+        type: 'complete',
+        text: `Completed ${discussion.transcript.length} message(s).`,
+      });
+      response.end();
+    } catch (error) {
+      const aborted = controller.signal.aborted || isAbortError(error);
+      streamGroupEvent(response, {
+        type: aborted ? 'system' : 'error',
+        text: aborted ? 'Simulation aborted.' : normalizedMessage(error, 'Simulation failed.'),
+      });
+      response.end();
     }
+  };
+}
 
-    writeSse(response, 'panel', {
-      type: 'complete',
-      text: 'Spark orchestration completed.',
-    } satisfies PanelStreamEvent);
-    response.end();
-  } catch (error) {
-    const aborted = controller.signal.aborted || (error instanceof Error && error.name === 'AbortError');
-    const message = aborted
-      ? 'Simulation aborted.'
-      : error instanceof Error
-        ? error.message
-        : 'Simulation failed.';
-
-    writeSse(response, 'panel', {
-      type: aborted ? 'system' : 'error',
-      text: message,
-    } satisfies PanelStreamEvent);
-    response.end();
-  }
-});
-
-simulationsRouter.post('/analyze', async (request, response) => {
-  const config = getServerConfig();
-  if (!config.configured) {
-    response.status(503).json({ message: 'MINDS_API_KEY is not configured on the server.' });
-    return;
-  }
-
-  const body = request.body as AnalyzeRequest;
-  if (!body?.product || !body?.personas || !body?.transcript) {
-    response.status(400).json({ message: 'product, personas, and transcript are required.' });
-    return;
-  }
-
-  const client = new MindsClient();
-
-  try {
-    const analyst = await ensureAnalystSpark(client, body.analystSpark);
-    const prompt = `Analyze this synthetic focus-group transcript.
-
-Product Name: ${body.product.name}
-Category: ${body.product.category}
-Description: ${body.product.description}
-
-Persona ids and names:
-${body.personas.map((persona) => `- ${persona.id}: ${persona.name}`).join('\n')}
-
-Transcript:
-${body.transcript}
-
-Return:
-- summary: exactly 3 sentences
-- metrics: one object per persona id listed above`;
-
-    const result = await client.completeSpark<{
-      content?: string;
-      parsed?: AnalysisResult;
-    }>(analyst.sparkId, {
-      messages: [
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-      response_format: {
-        type: 'json_schema',
-        json_schema: {
-          name: 'simulation_analysis',
-          strict: true,
-          schema: {
-            type: 'object',
-            properties: {
-              summary: {
-                type: 'string',
-              },
-              metrics: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  properties: {
-                    id: { type: 'string' },
-                    sentiment: { type: 'integer' },
-                    persuasion: { type: 'integer' },
-                    passion: { type: 'integer' },
-                  },
-                  required: ['id', 'sentiment', 'persuasion', 'passion'],
-                },
-              },
-            },
-            required: ['summary', 'metrics'],
-          },
-        },
+async function runBatchPhase(
+  response: Response,
+  phase: 'baseline' | 'relay',
+  groups: Group[],
+  concurrency: number,
+  runner: (group: Group, index: number) => Promise<void>,
+) {
+  await runWithConcurrency(
+    groups,
+    concurrency,
+    async (group, index) => {
+      await runner(group, index);
+      return null;
+    },
+    {
+      onStart: ({ active, completed, total }) => {
+        streamBatchEvent(response, {
+          type: 'batch_status',
+          phase,
+          completedGroups: completed,
+          totalGroups: total,
+          activeGroups: active,
+        });
       },
-    });
+      onFinish: ({ active, completed, total }) => {
+        streamBatchEvent(response, {
+          type: 'batch_status',
+          phase,
+          completedGroups: completed,
+          totalGroups: total,
+          activeGroups: active,
+        });
+      },
+    },
+  );
+}
 
-    const parsed =
-      result.parsed ?? (result.content ? parseJsonSafely<AnalysisResult>(result.content) : null);
-
-    if (!parsed || typeof parsed !== 'object' || !('summary' in parsed) || !('metrics' in parsed)) {
-      throw new Error('Analysis response did not contain a valid JSON payload.');
+function createBatchRunHandler(
+  clientFactory: () => MindsClientLike,
+  getConfigValue: () => ServerConfig,
+): RequestHandler {
+  return async (request, response) => {
+    const config = getConfigValue();
+    if (!config.configured) {
+      response.status(503).json({ message: 'MINDS_API_KEY is not configured on the server.' });
+      return;
     }
 
-    response.json({
-      analyst,
-      summary: parsed.summary,
-      metrics: parsed.metrics,
-    });
-  } catch (error) {
-    if (error instanceof MindsApiError) {
-      response.status(error.status).json({
-        message: error.message,
-        details: error.body,
+    const body = request.body as BatchRunRequest;
+    if (!body?.config || !body?.product || !Array.isArray(body.groups) || !Array.isArray(body.personas)) {
+      response.status(400).json({ message: 'config, product, groups, and personas are required.' });
+      return;
+    }
+
+    const selectedGroups = body.config.groupIds
+      .map((groupId) => body.groups.find((group) => group.id === groupId))
+      .filter(Boolean) as Group[];
+
+    if (selectedGroups.length === 0) {
+      response.status(400).json({ message: 'Batch run requires at least one selected group.' });
+      return;
+    }
+
+    const missingPersona = selectedGroups
+      .flatMap((group) => group.personaIds.map((personaId) => ({ group, personaId })))
+      .find(({ personaId }) => !body.personas.find((persona) => persona.id === personaId));
+    if (missingPersona) {
+      response.status(400).json({
+        message: `Group ${missingPersona.group.name} references a persona that is missing from the request.`,
       });
       return;
     }
 
-    response.status(500).json({
-      message: error instanceof Error ? error.message : 'Analysis failed.',
+    const missingRemote = selectedGroups
+      .flatMap((group) => group.personaIds.map((personaId) => ({ group, personaId })))
+      .find(({ personaId }) => !body.personas.find((persona) => persona.id === personaId)?.remote?.sparkId);
+    if (missingRemote) {
+      response.status(400).json({
+        message: `Group ${missingRemote.group.name} cannot run because one or more personas are missing synced remote sparks.`,
+      });
+      return;
+    }
+
+    const invalidGroup = selectedGroups.find(
+      (group) => group.personaIds.length === 0 || group.personaIds.length > config.maxPanelMinds,
+    );
+    if (invalidGroup) {
+      response.status(400).json({
+        message: `Group ${invalidGroup.name} is invalid for batch execution.`,
+      });
+      return;
+    }
+
+    const client = clientFactory();
+    const controller = new AbortController();
+    request.on('aborted', () => controller.abort());
+    response.on('close', () => {
+      if (!response.writableEnded) {
+        controller.abort();
+      }
     });
-  }
-});
+
+    response.setHeader('Content-Type', 'text/event-stream');
+    response.setHeader('Cache-Control', 'no-cache, no-transform');
+    response.setHeader('Connection', 'keep-alive');
+    response.flushHeaders();
+
+    const concurrency = clampConcurrency(body.config.concurrency);
+    const startedAt = new Date().toISOString();
+    const batchRun: BatchRunRecord = {
+      id: body.config.id,
+      name: body.config.name,
+      status: 'running',
+      product: body.product,
+      groupIds: selectedGroups.map((group) => group.id),
+      concurrency,
+      createdAt: body.config.createdAt,
+      startedAt,
+      baselineResults: [],
+      relayResults: [],
+      failedGroups: [],
+    };
+
+    try {
+      const analyst = await ensureAnalystSpark(client);
+      streamBatchEvent(response, {
+        type: 'system',
+        text: `Starting batch run "${batchRun.name}" with ${selectedGroups.length} group(s) at concurrency ${concurrency}.`,
+      });
+
+      await runBatchPhase(response, 'baseline', selectedGroups, concurrency, async (group) => {
+        if (controller.signal.aborted) {
+          throw new DOMException('Aborted', 'AbortError');
+        }
+
+        streamBatchEvent(response, {
+          type: 'group_started',
+          groupId: group.id,
+          groupName: group.name,
+          phase: 'baseline',
+        });
+
+        try {
+          const discussion = await runGroupDiscussion({
+            client,
+            group,
+            product: body.product,
+            personas: body.personas,
+            phase: 'baseline',
+            signal: controller.signal,
+            onMessage: (event) => {
+              streamBatchEvent(response, {
+                type: 'group_message',
+                groupId: event.groupId,
+                groupName: event.groupName,
+                phase: event.phase,
+                round: event.round,
+                mindId: event.mindId,
+                mindName: event.mindName,
+                text: event.text,
+              });
+            },
+          });
+
+          const personasForGroup = group.personaIds
+            .map((personaId) => body.personas.find((persona) => persona.id === personaId))
+            .filter(Boolean) as Array<Pick<PersonaState, 'id' | 'name'>>;
+          const analysis = await analyzeGroupTranscript(
+            client,
+            analyst,
+            body.product,
+            group,
+            personasForGroup,
+            discussion.transcript,
+            'baseline',
+            controller.signal,
+          );
+
+          const result: GroupPhaseResult = {
+            groupId: group.id,
+            groupName: group.name,
+            phase: 'baseline',
+            transcript: discussion.transcript,
+            analysis,
+            startedAt: discussion.startedAt,
+            completedAt: discussion.completedAt,
+            status: 'completed',
+          };
+
+          batchRun.baselineResults.push(result);
+          streamBatchEvent(response, {
+            type: 'group_analysis',
+            groupId: group.id,
+            groupName: group.name,
+            phase: 'baseline',
+            analysis,
+          });
+        } catch (error) {
+          if (controller.signal.aborted || isAbortError(error)) {
+            throw error;
+          }
+
+          const failure = createFailure(group.id, group.name, 'baseline', normalizedMessage(error, 'Baseline group failed.'));
+          batchRun.failedGroups.push(failure);
+          streamBatchEvent(response, {
+            type: 'error',
+            groupId: group.id,
+            groupName: group.name,
+            phase: 'baseline',
+            message: failure.message,
+          });
+        }
+      });
+
+      batchRun.baselineResults = batchRun.groupIds
+        .map((groupId) => batchRun.baselineResults.find((result) => result.groupId === groupId))
+        .filter(Boolean) as GroupPhaseResult[];
+
+      if (batchRun.baselineResults.length === 0) {
+        batchRun.status = 'failed';
+        batchRun.completedAt = new Date().toISOString();
+        streamBatchEvent(response, {
+          type: 'error',
+          phase: 'baseline',
+          message: 'All groups failed during the baseline phase.',
+        });
+        streamBatchEvent(response, {
+          type: 'batch_completed',
+          run: batchRun,
+        });
+        response.end();
+        return;
+      }
+
+      streamBatchEvent(response, {
+        type: 'batch_status',
+        phase: 'consensus',
+        completedGroups: 0,
+        totalGroups: 1,
+        activeGroups: 1,
+      });
+
+      try {
+        batchRun.baselineConsensus = await buildBaselineConsensus(
+          client,
+          analyst,
+          body.product,
+          batchRun.baselineResults,
+          batchRun.failedGroups,
+          controller.signal,
+        );
+        streamBatchEvent(response, {
+          type: 'consensus_ready',
+          consensus: batchRun.baselineConsensus,
+        });
+      } catch (error) {
+        if (controller.signal.aborted || isAbortError(error)) {
+          throw error;
+        }
+
+        batchRun.failedGroups.push(
+          createFailure('__consensus__', 'Global Consensus', 'consensus', normalizedMessage(error, 'Consensus synthesis failed.')),
+        );
+        batchRun.status = finalizeStatus(batchRun.baselineResults, batchRun.relayResults, batchRun.failedGroups);
+        batchRun.completedAt = new Date().toISOString();
+        streamBatchEvent(response, {
+          type: 'error',
+          phase: 'consensus',
+          message: 'Consensus synthesis failed. Relay was skipped.',
+        });
+        streamBatchEvent(response, {
+          type: 'batch_completed',
+          run: batchRun,
+        });
+        response.end();
+        return;
+      }
+
+      streamBatchEvent(response, {
+        type: 'batch_status',
+        phase: 'consensus',
+        completedGroups: 1,
+        totalGroups: 1,
+        activeGroups: 0,
+      });
+
+      const baselineByGroupId = groupResultsById(batchRun.baselineResults);
+      const relayGroups = selectedGroups.filter((group) => baselineByGroupId.has(group.id));
+
+      await runBatchPhase(response, 'relay', relayGroups, concurrency, async (group) => {
+        if (controller.signal.aborted) {
+          throw new DOMException('Aborted', 'AbortError');
+        }
+
+        const baselineResult = baselineByGroupId.get(group.id);
+        if (!baselineResult || !batchRun.baselineConsensus) {
+          return;
+        }
+
+        streamBatchEvent(response, {
+          type: 'group_started',
+          groupId: group.id,
+          groupName: group.name,
+          phase: 'relay',
+        });
+
+        try {
+          const discussion = await runGroupDiscussion({
+            client,
+            group,
+            product: body.product,
+            personas: body.personas,
+            phase: 'relay',
+            baselineSummary: baselineResult.analysis.summary,
+            consensusSummary: batchRun.baselineConsensus,
+            signal: controller.signal,
+            onMessage: (event) => {
+              streamBatchEvent(response, {
+                type: 'group_message',
+                groupId: event.groupId,
+                groupName: event.groupName,
+                phase: event.phase,
+                round: event.round,
+                mindId: event.mindId,
+                mindName: event.mindName,
+                text: event.text,
+              });
+            },
+          });
+
+          const personasForGroup = group.personaIds
+            .map((personaId) => body.personas.find((persona) => persona.id === personaId))
+            .filter(Boolean) as Array<Pick<PersonaState, 'id' | 'name'>>;
+          const analysis = await analyzeGroupTranscript(
+            client,
+            analyst,
+            body.product,
+            group,
+            personasForGroup,
+            discussion.transcript,
+            'relay',
+            controller.signal,
+          );
+
+          const result: GroupPhaseResult = {
+            groupId: group.id,
+            groupName: group.name,
+            phase: 'relay',
+            transcript: discussion.transcript,
+            analysis,
+            startedAt: discussion.startedAt,
+            completedAt: discussion.completedAt,
+            status: 'completed',
+          };
+
+          batchRun.relayResults.push(result);
+          streamBatchEvent(response, {
+            type: 'group_analysis',
+            groupId: group.id,
+            groupName: group.name,
+            phase: 'relay',
+            analysis,
+          });
+        } catch (error) {
+          if (controller.signal.aborted || isAbortError(error)) {
+            throw error;
+          }
+
+          const failure = createFailure(group.id, group.name, 'relay', normalizedMessage(error, 'Relay group failed.'));
+          batchRun.failedGroups.push(failure);
+          streamBatchEvent(response, {
+            type: 'error',
+            groupId: group.id,
+            groupName: group.name,
+            phase: 'relay',
+            message: failure.message,
+          });
+        }
+      });
+
+      batchRun.relayResults = batchRun.groupIds
+        .map((groupId) => batchRun.relayResults.find((result) => result.groupId === groupId))
+        .filter(Boolean) as GroupPhaseResult[];
+
+      if (batchRun.relayResults.length === 0) {
+        batchRun.failedGroups.push(
+          createFailure('__aggregate__', 'Batch Aggregate', 'aggregate', 'All relay groups failed. Aggregate was skipped.'),
+        );
+        batchRun.status = finalizeStatus(batchRun.baselineResults, batchRun.relayResults, batchRun.failedGroups);
+        batchRun.completedAt = new Date().toISOString();
+        streamBatchEvent(response, {
+          type: 'error',
+          phase: 'aggregate',
+          message: 'All relay groups failed. Aggregate was skipped.',
+        });
+        streamBatchEvent(response, {
+          type: 'batch_completed',
+          run: batchRun,
+        });
+        response.end();
+        return;
+      }
+
+      streamBatchEvent(response, {
+        type: 'batch_status',
+        phase: 'aggregate',
+        completedGroups: 0,
+        totalGroups: 1,
+        activeGroups: 1,
+      });
+
+      try {
+        batchRun.finalAggregate = await buildFinalBatchAggregate(
+          client,
+          analyst,
+          body.product,
+          batchRun.baselineConsensus!,
+          batchRun.relayResults,
+          batchRun.failedGroups,
+          controller.signal,
+        );
+      } catch (error) {
+        if (controller.signal.aborted || isAbortError(error)) {
+          throw error;
+        }
+
+        batchRun.failedGroups.push(
+          createFailure('__aggregate__', 'Batch Aggregate', 'aggregate', normalizedMessage(error, 'Final aggregate synthesis failed.')),
+        );
+        streamBatchEvent(response, {
+          type: 'error',
+          phase: 'aggregate',
+          message: 'Final aggregate synthesis failed.',
+        });
+      }
+
+      streamBatchEvent(response, {
+        type: 'batch_status',
+        phase: 'aggregate',
+        completedGroups: 1,
+        totalGroups: 1,
+        activeGroups: 0,
+      });
+
+      batchRun.status = finalizeStatus(batchRun.baselineResults, batchRun.relayResults, batchRun.failedGroups);
+      batchRun.completedAt = new Date().toISOString();
+      streamBatchEvent(response, {
+        type: 'batch_status',
+        phase: 'complete',
+        completedGroups: selectedGroups.length,
+        totalGroups: selectedGroups.length,
+        activeGroups: 0,
+      });
+      streamBatchEvent(response, {
+        type: 'batch_completed',
+        run: batchRun,
+      });
+      response.end();
+    } catch (error) {
+      batchRun.status = controller.signal.aborted || isAbortError(error) ? 'aborted' : 'failed';
+      batchRun.completedAt = new Date().toISOString();
+      streamBatchEvent(response, {
+        type: 'error',
+        phase: 'aggregate',
+        message:
+          batchRun.status === 'aborted'
+            ? 'Batch run aborted.'
+            : normalizedMessage(error, 'Batch run failed.'),
+      });
+      streamBatchEvent(response, {
+        type: 'batch_completed',
+        run: batchRun,
+      });
+      response.end();
+    }
+  };
+}
+
+export function createSimulationsRouter(options: SimulationsRouterOptions = {}) {
+  const clientFactory = options.clientFactory ?? (() => new MindsClient());
+  const getConfigValue = options.getConfig ?? getServerConfig;
+  const router = Router();
+
+  const groupRunHandler = createGroupRunHandler(clientFactory, getConfigValue);
+  router.post('/group-run', groupRunHandler);
+  router.post('/panel-run', groupRunHandler);
+
+  router.post('/batch-run', createBatchRunHandler(clientFactory, getConfigValue));
+
+  router.post('/analyze', async (request, response) => {
+    const config = getConfigValue();
+    if (!config.configured) {
+      response.status(503).json({ message: 'MINDS_API_KEY is not configured on the server.' });
+      return;
+    }
+
+    const body = request.body as AnalyzeRequest;
+    if (!body?.product || !body?.personas || !body?.transcript) {
+      response.status(400).json({ message: 'product, personas, and transcript are required.' });
+      return;
+    }
+
+    const client = clientFactory();
+
+    try {
+      const analyst = await ensureAnalystSpark(client, body.analystSpark);
+      const analysis = await analyzeGroupTranscript(
+        client,
+        analyst,
+        body.product,
+        syntheticGroupForAnalysis(body.personas),
+        body.personas,
+        [
+          {
+            id: 'single-run-transcript',
+            senderId: 'system',
+            senderName: 'TRANSCRIPT',
+            text: body.transcript,
+            createdAt: new Date().toISOString(),
+            isSystem: true,
+          },
+        ],
+        'baseline',
+      );
+
+      response.json({
+        analyst,
+        summary: analysis.summary,
+        metrics: analysis.metrics,
+        topAppeals: analysis.topAppeals,
+        topObjections: analysis.topObjections,
+        purchaseIntent: analysis.purchaseIntent,
+      });
+    } catch (error) {
+      respondJsonError(error, response);
+    }
+  });
+
+  return router;
+}
+
+export const simulationsRouter = createSimulationsRouter();

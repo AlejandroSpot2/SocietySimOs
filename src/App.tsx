@@ -23,8 +23,11 @@ import {
   Zap,
 } from 'lucide-react';
 import {
+  Bar,
+  BarChart,
   CartesianGrid,
   Cell,
+  Legend,
   ReferenceLine,
   ResponsiveContainer,
   Scatter,
@@ -42,7 +45,10 @@ import {
   type StoredAppState,
 } from './lib/storage';
 import type {
+  BatchRunRecord,
+  BatchRunStreamEvent,
   Group,
+  GroupPhaseResult,
   HealthResponse,
   Message,
   Metric,
@@ -50,12 +56,35 @@ import type {
   PersonaState,
   Product,
   RemoteSparkRef,
+  VisualizationPhase,
+  VisualizationSource,
 } from './types';
 
-type Tab = 'simulation' | 'products' | 'personas' | 'groups' | 'visualization' | 'settings';
+type Tab =
+  | 'simulation'
+  | 'batch-runs'
+  | 'products'
+  | 'personas'
+  | 'groups'
+  | 'visualization'
+  | 'settings';
 type PersonaVisuals = {
   color: string;
   icon: typeof Activity;
+};
+type BatchGroupStatus =
+  | 'queued'
+  | 'baseline_running'
+  | 'baseline_analyzed'
+  | 'relay_running'
+  | 'relay_analyzed'
+  | 'completed'
+  | 'failed';
+type BatchProgressItem = {
+  groupId: string;
+  groupName: string;
+  status: BatchGroupStatus;
+  errorMessage?: string;
 };
 
 const PERSONA_VISUALS: Record<string, PersonaVisuals> = {
@@ -147,7 +176,7 @@ const DEFAULT_PRODUCTS: Product[] = [
 const DEFAULT_GROUPS = (personas: PersonaState[]): Group[] => [
   {
     id: 'g1',
-    name: 'Core Panel',
+    name: 'Core Group',
     personaIds: personas.slice(0, 5).map((persona) => persona.id),
   },
 ];
@@ -161,6 +190,14 @@ const DEFAULT_STORAGE_STATE = (): StoredAppState => ({
   selectedGroupId: 'g1',
   selectedVisPersona: null,
   analystSpark: null,
+  batchRuns: [],
+  selectedBatchRunId: null,
+  visualizationSource: 'single',
+  selectedVisualizationPhase: 'baseline',
+  batchDraft: {
+    selectedGroupIds: DEFAULT_GROUPS(DEFAULT_PERSONAS).map((group) => group.id),
+    concurrency: 4,
+  },
 });
 
 const VISUAL_COLORS: Record<string, string> = {
@@ -231,9 +268,9 @@ function stringifyRaw(value: unknown): string {
   }
 }
 
-function readStreamEvents(
+function readStreamEvents<TEvent extends { type: string }>(
   response: Response,
-  onEvent: (event: PanelStreamEvent) => void,
+  onEvent: (event: TEvent) => void,
 ): Promise<void> {
   if (!response.body) {
     throw new Error('Simulation stream was empty.');
@@ -253,20 +290,22 @@ function readStreamEvents(
 
     const rawData = dataLines.join('\n');
     if (rawData === '[DONE]') {
-      onEvent({ type: 'complete', raw: rawData });
+      onEvent({ type: 'complete', raw: rawData } as unknown as TEvent);
       currentEvent = 'message';
       dataLines = [];
       return;
     }
 
     try {
-      onEvent(JSON.parse(rawData) as PanelStreamEvent);
+      onEvent(JSON.parse(rawData) as TEvent);
     } catch {
-      onEvent({
-        type: currentEvent === 'error' ? 'error' : 'system',
-        text: rawData,
-        raw: rawData,
-      });
+      onEvent(
+        {
+          type: currentEvent === 'error' ? 'error' : 'system',
+          text: rawData,
+          raw: rawData,
+        } as unknown as TEvent,
+      );
     }
 
     currentEvent = 'message';
@@ -316,6 +355,112 @@ function readStreamEvents(
   return pump();
 }
 
+function createBatchProgress(groups: Group[]): BatchProgressItem[] {
+  return groups.map((group) => ({
+    groupId: group.id,
+    groupName: group.name,
+    status: 'queued',
+  }));
+}
+
+function updateBatchProgressItem(
+  current: BatchProgressItem[],
+  groupId: string,
+  updates: Partial<BatchProgressItem>,
+): BatchProgressItem[] {
+  return current.map((item) => (item.groupId === groupId ? { ...item, ...updates } : item));
+}
+
+function getBatchStatusLabel(status: BatchGroupStatus): string {
+  switch (status) {
+    case 'baseline_running':
+      return 'baseline running';
+    case 'baseline_analyzed':
+      return 'baseline analyzed';
+    case 'relay_running':
+      return 'relay running';
+    case 'relay_analyzed':
+      return 'relay analyzed';
+    case 'completed':
+      return 'completed';
+    case 'failed':
+      return 'failed';
+    default:
+      return 'queued';
+  }
+}
+
+function getBatchStatusColor(status: BatchGroupStatus): string {
+  switch (status) {
+    case 'baseline_running':
+    case 'relay_running':
+      return 'text-[#00e5ff]';
+    case 'baseline_analyzed':
+    case 'relay_analyzed':
+      return 'text-[#f5f500]';
+    case 'completed':
+      return 'text-[#22c55e]';
+    case 'failed':
+      return 'text-[#ef4444]';
+    default:
+      return 'text-[#444444]';
+  }
+}
+
+function getPhaseResults(run: BatchRunRecord, phase: VisualizationPhase): GroupPhaseResult[] {
+  if (phase === 'relay') {
+    return run.relayResults;
+  }
+
+  if (phase === 'aggregate') {
+    return [];
+  }
+
+  return run.baselineResults;
+}
+
+function getVisualizationMessages(
+  source: VisualizationSource,
+  selectedBatchRun: BatchRunRecord | null,
+  selectedPhase: VisualizationPhase,
+  selectedGroupId: string | null,
+  singleMessages: Message[],
+): Message[] {
+  if (source === 'single') {
+    return singleMessages;
+  }
+
+  if (!selectedBatchRun || selectedPhase === 'aggregate' || !selectedGroupId) {
+    return [];
+  }
+
+  return (
+    getPhaseResults(selectedBatchRun, selectedPhase).find((result) => result.groupId === selectedGroupId)?.transcript ??
+    []
+  );
+}
+
+function getVisualizationMetrics(
+  source: VisualizationSource,
+  selectedBatchRun: BatchRunRecord | null,
+  selectedPhase: VisualizationPhase,
+  selectedGroupId: string | null,
+  singleMetrics: Metric[],
+): Metric[] {
+  if (source === 'single') {
+    return singleMetrics;
+  }
+
+  if (!selectedBatchRun || selectedPhase === 'aggregate' || !selectedGroupId) {
+    return [];
+  }
+
+  return (
+    getPhaseResults(selectedBatchRun, selectedPhase).find((result) => result.groupId === selectedGroupId)?.analysis
+      .metrics ?? []
+  );
+}
+
 export default function App() {
   const initialState = useMemo(() => loadAppState(DEFAULT_STORAGE_STATE()), []);
 
@@ -333,6 +478,17 @@ export default function App() {
     initialState.selectedVisPersona,
   );
   const [analystSpark, setAnalystSpark] = useState<RemoteSparkRef | null>(initialState.analystSpark);
+  const [batchRuns, setBatchRuns] = useState<BatchRunRecord[]>(initialState.batchRuns);
+  const [selectedBatchRunId, setSelectedBatchRunId] = useState<string | null>(
+    initialState.selectedBatchRunId,
+  );
+  const [visualizationSource, setVisualizationSource] = useState<VisualizationSource>(
+    initialState.visualizationSource,
+  );
+  const [selectedVisualizationPhase, setSelectedVisualizationPhase] = useState<VisualizationPhase>(
+    initialState.selectedVisualizationPhase,
+  );
+  const [batchDraft, setBatchDraft] = useState(initialState.batchDraft);
   const [visMode, setVisMode] = useState<'analytical' | 'cinematic'>('analytical');
   const [cameraView, setCameraView] = useState<'iso' | 'top' | 'front' | 'side'>('iso');
   const [messages, setMessages] = useState<Message[]>([]);
@@ -342,24 +498,55 @@ export default function App() {
     initialState.selectedGroupId || initialState.groups[0]?.id || 'g1',
   );
   const [isSimulating, setIsSimulating] = useState(false);
+  const [isBatchRunning, setIsBatchRunning] = useState(false);
   const [isSyncingPersonas, setIsSyncingPersonas] = useState(false);
   const [isSyncingGroups, setIsSyncingGroups] = useState(false);
   const [icpPersonas, setIcpPersonas] = useState<PersonaState[]>([]);
   const [isGeneratingIcp, setIsGeneratingIcp] = useState(false);
+  const [batchMessages, setBatchMessages] = useState<Message[]>([]);
+  const [batchProgress, setBatchProgress] = useState<BatchProgressItem[]>([]);
+  const [batchPhase, setBatchPhase] = useState<
+    'baseline' | 'consensus' | 'relay' | 'aggregate' | 'complete'
+  >('baseline');
+  const [batchCompletedGroups, setBatchCompletedGroups] = useState(0);
+  const [batchFailedGroups, setBatchFailedGroups] = useState(0);
+  const [batchElapsedMs, setBatchElapsedMs] = useState(0);
+  const [batchStartedAt, setBatchStartedAt] = useState<string | null>(null);
 
   const terminalRef = useRef<HTMLDivElement>(null);
+  const batchTerminalRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const batchAbortRef = useRef<AbortController | null>(null);
 
   const maxPanelMinds = health?.maxPanelMinds ?? 5;
   const selectedProduct = products.find((product) => product.id === selectedProductId) ?? products[0];
   const selectedGroup = groups.find((group) => group.id === selectedGroupId) ?? groups[0];
   const selectedGroupEditor = groups.find((group) => group.id === selectedGroupEditorId) ?? groups[0];
+  const selectedBatchRun = batchRuns.find((run) => run.id === selectedBatchRunId) ?? batchRuns[0] ?? null;
+  const isBusy = isSimulating || isBatchRunning;
 
   useEffect(() => {
     if (terminalRef.current) {
       terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
     }
   }, [messages, metrics]);
+
+  useEffect(() => {
+    if (batchTerminalRef.current) {
+      batchTerminalRef.current.scrollTop = batchTerminalRef.current.scrollHeight;
+    }
+  }, [batchMessages, batchProgress]);
+
+  useEffect(() => {
+    if (!isBatchRunning || !batchStartedAt) {
+      return;
+    }
+
+    const update = () => setBatchElapsedMs(Date.now() - new Date(batchStartedAt).getTime());
+    update();
+    const timer = window.setInterval(update, 1000);
+    return () => window.clearInterval(timer);
+  }, [isBatchRunning, batchStartedAt]);
 
   useEffect(() => {
     const state: StoredAppState = {
@@ -371,10 +558,28 @@ export default function App() {
       selectedGroupId,
       selectedVisPersona,
       analystSpark,
+      batchRuns,
+      selectedBatchRunId,
+      visualizationSource,
+      selectedVisualizationPhase,
+      batchDraft,
     };
 
     saveAppState(state);
-  }, [products, personas, groups, selectedProductId, selectedGroupId, selectedVisPersona, analystSpark]);
+  }, [
+    products,
+    personas,
+    groups,
+    selectedProductId,
+    selectedGroupId,
+    selectedVisPersona,
+    analystSpark,
+    batchRuns,
+    selectedBatchRunId,
+    visualizationSource,
+    selectedVisualizationPhase,
+    batchDraft,
+  ]);
 
   useEffect(() => {
     let isMounted = true;
@@ -407,6 +612,59 @@ export default function App() {
       window.clearInterval(timer);
     };
   }, []);
+
+  useEffect(() => {
+    if (groups.length === 0) {
+      return;
+    }
+
+    if (!groups.some((group) => group.id === selectedGroupId)) {
+      setSelectedGroupId(groups[0].id);
+    }
+
+    if (!groups.some((group) => group.id === selectedGroupEditorId)) {
+      setSelectedGroupEditorId(groups[0].id);
+    }
+  }, [groups, selectedGroupId, selectedGroupEditorId]);
+
+  useEffect(() => {
+    const validGroupIds = new Set(
+      groups.filter((group) => group.personaIds.length > 0 && group.personaIds.length <= maxPanelMinds).map((group) => group.id),
+    );
+
+    setBatchDraft((current) => {
+      const retained = current.selectedGroupIds.filter((groupId) => validGroupIds.has(groupId));
+      const nextSelectedGroupIds =
+        retained.length > 0 ? retained : Array.from(validGroupIds);
+
+      if (
+        retained.length === current.selectedGroupIds.length &&
+        nextSelectedGroupIds.length === current.selectedGroupIds.length
+      ) {
+        const same = nextSelectedGroupIds.every((groupId, index) => current.selectedGroupIds[index] === groupId);
+        if (same) {
+          return current;
+        }
+      }
+
+      return {
+        ...current,
+        selectedGroupIds: nextSelectedGroupIds,
+      };
+    });
+  }, [groups, maxPanelMinds]);
+
+  useEffect(() => {
+    if (batchRuns.length === 0) {
+      return;
+    }
+
+    if (selectedBatchRunId && batchRuns.some((run) => run.id === selectedBatchRunId)) {
+      return;
+    }
+
+    setSelectedBatchRunId(batchRuns[0].id);
+  }, [batchRuns, selectedBatchRunId]);
 
   const personaSyncSignature = useMemo(
     () =>
@@ -449,6 +707,9 @@ export default function App() {
         id: persona.id,
         name: persona.name,
         prompt: persona.prompt,
+        discipline: persona.discipline,
+        description: persona.description,
+        tags: persona.tags,
         remote: persona.remote,
       })),
     };
@@ -524,8 +785,8 @@ export default function App() {
 
     try {
       const result = await apiRequest<{
-        groups: Array<Pick<Group, 'id' | 'remotePanelId' | 'remoteFingerprint' | 'lastSyncedAt'>>;
-      }>('/api/minds/panels/sync', {
+        groups: Array<Pick<Group, 'id' | 'remoteGroupId' | 'remoteGroupFingerprint' | 'lastSyncedAt'>>;
+      }>('/api/minds/groups/sync', {
         method: 'POST',
         body: JSON.stringify({
           groups: syncableGroups,
@@ -542,8 +803,8 @@ export default function App() {
 
         return {
           ...group,
-          remotePanelId: remoteGroup.remotePanelId,
-          remoteFingerprint: remoteGroup.remoteFingerprint,
+          remoteGroupId: remoteGroup.remoteGroupId,
+          remoteGroupFingerprint: remoteGroup.remoteGroupFingerprint,
           lastSyncedAt: remoteGroup.lastSyncedAt,
         };
       });
@@ -728,59 +989,161 @@ export default function App() {
     pushSystemMessage('Simulation halted by user.');
   };
 
+  const stopBatchRun = () => {
+    batchAbortRef.current?.abort();
+    batchAbortRef.current = null;
+    setIsBatchRunning(false);
+    setBatchPhase('complete');
+    setBatchMessages((current) =>
+      upsertMessages(
+        current,
+        createMessage({
+          senderId: 'system',
+          senderName: 'BATCH_ABORT',
+          text: 'Batch run halted by user.',
+          isSystem: true,
+        }),
+      ),
+    );
+  };
+
   const runSimulationWithPersonas = async (
     personasToUse: PersonaState[],
     product: Product,
+    options?: { groupOverride?: Group },
   ) => {
     const controller = new AbortController();
     abortRef.current = controller;
     setIsSimulating(true);
-
-    const log = (text: string) =>
-      setMessages((current) =>
-        upsertMessages(current, createMessage({ senderId: 'system', senderName: 'SYSTEM', text, isSystem: true })),
-      );
+    setMetrics([]);
+    setMessages([
+      createMessage({
+        senderId: 'system',
+        senderName: 'SYSTEM',
+        text: `INITIALIZING GROUP RUN\nPRODUCT: ${product.name}\nCATEGORY: ${product.category}\nGROUP: ${
+          options?.groupOverride?.name ?? `${product.name} Focus Group`
+        }`,
+        isSystem: true,
+      }),
+    ]);
+    setActiveTab('simulation');
 
     try {
-      const group: Group = {
-        id: 'icp-group-' + Date.now(),
-        name: product.name + ' Focus Group',
-        personaIds: personasToUse.map((p) => p.id),
-      };
+      const allHaveRemote = personasToUse.every((persona) => persona.remote?.sparkId);
+      let activePersonas: PersonaState[] = personasToUse;
+      let activeGroup: Group =
+        options?.groupOverride ?? {
+          id: `adhoc-${Date.now()}`,
+          name: `${product.name} Focus Group`,
+          personaIds: personasToUse.map((persona) => persona.id),
+        };
 
-      log(`Running ${personasToUse.length} personas for "${product.name}"...`);
+      if (!allHaveRemote) {
+        const syncedPersonas = await syncPersonas(personas);
 
-      const response = await fetch('/api/simulations/panel-run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-        body: JSON.stringify({ group, product, personas: personasToUse }),
-        signal: controller.signal,
-      });
+        if (options?.groupOverride) {
+          const syncedGroups = await syncGroups(groups, syncedPersonas);
+          const resolvedGroup = syncedGroups.find((group) => group.id === options.groupOverride?.id);
+          if (!resolvedGroup) {
+            throw new Error('Selected group could not be resolved after sync.');
+          }
 
-      if (!response.ok) {
-        const msg = await response.text();
-        throw new Error(msg || `Simulation failed ${response.status}`);
+          activeGroup = resolvedGroup;
+          activePersonas = resolvedGroup.personaIds
+            .map((personaId) => syncedPersonas.find((persona) => persona.id === personaId))
+            .filter(Boolean) as PersonaState[];
+        } else {
+          activePersonas = personasToUse
+            .map((persona) => syncedPersonas.find((candidate) => candidate.id === persona.id))
+            .filter(Boolean) as PersonaState[];
+          activeGroup = {
+            ...activeGroup,
+            personaIds: activePersonas.map((persona) => persona.id),
+          };
+        }
+      } else {
+        activeGroup = {
+          ...activeGroup,
+          personaIds: activePersonas.map((persona) => persona.id),
+        };
       }
 
       const transcriptLines: string[] = [];
 
-      await readStreamEvents(response, (event) => {
-        if (event.type === 'mind_message') {
-          const text = event.text ?? '';
-          const senderName = event.mindName ?? 'Mind';
-          const senderId = event.mindId ?? senderName.toLowerCase().replace(/\s+/g, '_');
-          transcriptLines.push(`${senderName}: ${text}`);
-          setMessages((current) =>
-            upsertMessages(current, createMessage({ senderId, senderName, text })),
-          );
-        } else if (event.type === 'system' && event.text) {
-          log(event.text);
-        } else if (event.type === 'error') {
-          log(event.text ?? stringifyRaw(event.raw));
-        }
+      const response = await fetch('/api/simulations/group-run', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+        },
+        body: JSON.stringify({
+          group: activeGroup,
+          product,
+          personas: activePersonas.map((persona) => ({
+            id: persona.id,
+            name: persona.name,
+            remote: persona.remote,
+          })),
+        }),
+        signal: controller.signal,
       });
 
-      log('Analyzing results...');
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || `Simulation run failed with status ${response.status}`);
+      }
+
+      await readStreamEvents<PanelStreamEvent>(response, (event) => {
+        if (event.type === 'mind_message') {
+          const senderName =
+            event.mindName ||
+            activePersonas.find((persona) => persona.id === event.mindId)?.name ||
+            'Mind';
+          const senderId = event.mindId || senderName.toLowerCase().replace(/\s+/g, '_');
+          const text = event.text || '';
+          transcriptLines.push(`${senderName}: ${text}`);
+          setMessages((current) =>
+            upsertMessages(
+              current,
+              createMessage({
+                senderId,
+                senderName,
+                text,
+              }),
+            ),
+          );
+          return;
+        }
+
+        if (event.type === 'error') {
+          setMessages((current) =>
+            upsertMessages(
+              current,
+              createMessage({
+                senderId: 'system',
+                senderName: 'RUN_ERROR',
+                text: event.text || stringifyRaw(event.raw),
+                isSystem: true,
+              }),
+            ),
+          );
+          return;
+        }
+
+        if (event.type === 'system' && event.text) {
+          setMessages((current) =>
+            upsertMessages(
+              current,
+              createMessage({
+                senderId: 'system',
+                senderName: 'RUN_EVENT',
+                text: event.text,
+                isSystem: true,
+              }),
+            ),
+          );
+        }
+      });
 
       const analysis = await apiRequest<{
         analyst: RemoteSparkRef;
@@ -790,7 +1153,7 @@ export default function App() {
         method: 'POST',
         body: JSON.stringify({
           product,
-          personas: personasToUse.map((p) => ({ id: p.id, name: p.name })),
+          personas: activePersonas.map((persona) => ({ id: persona.id, name: persona.name })),
           transcript: transcriptLines.join('\n'),
           analystSpark,
         }),
@@ -799,6 +1162,8 @@ export default function App() {
 
       setAnalystSpark(analysis.analyst);
       setMetrics(analysis.metrics);
+      setVisualizationSource('single');
+      setSelectedVisualizationPhase('baseline');
       setMessages((current) =>
         upsertMessages(
           current,
@@ -811,7 +1176,9 @@ export default function App() {
         ),
       );
     } catch (error) {
-      if ((error as Error).name === 'AbortError') return;
+      if ((error as Error).name === 'AbortError') {
+        return;
+      }
       setMessages((current) =>
         upsertMessages(
           current,
@@ -881,6 +1248,10 @@ export default function App() {
           name: string;
           color: string;
           archetype: string;
+          prompt: string;
+          discipline: string;
+          description: string;
+          tags: string[];
           remote: RemoteSparkRef;
         }>;
         postsScraped: number;
@@ -901,25 +1272,36 @@ export default function App() {
         id: p.id,
         name: p.name,
         color: p.color,
-        prompt: '',
+        prompt: p.prompt,
+        discipline: p.discipline,
+        description: p.description,
+        tags: p.tags,
         remote: p.remote,
       }));
 
       setIcpPersonas(newPersonas);
 
-      // Sync into personas + groups state so Personas/Groups tabs reflect them
-      setPersonas(newPersonas);
+      // Keep existing local personas/groups and upsert the generated ICP panel into editor state.
+      setPersonas((current) => {
+        const next = new Map(current.map((persona) => [persona.id, persona]));
+        for (const persona of newPersonas) {
+          next.set(persona.id, persona);
+        }
+        return Array.from(next.values());
+      });
       const icpGroup: Group = {
         id: 'icp-auto-group',
         name: `${activeProduct.name} — Real ICP Panel`,
         personaIds: newPersonas.map((p) => p.id),
       };
-      setGroups([icpGroup]);
+      icpGroup.name = `${activeProduct.name} — Real ICP Panel`;
+      icpGroup.name = `${activeProduct.name} — Real ICP Panel`;
+      setGroups((current) => [icpGroup, ...current.filter((group) => group.id !== icpGroup.id)]);
       setSelectedGroupId('icp-auto-group');
       setSelectedGroupEditorId('icp-auto-group');
 
       log(`\nStep 3/3: Starting simulation...`);
-      await runSimulationWithPersonas(newPersonas, activeProduct);
+      await runSimulationWithPersonas(newPersonas, activeProduct, { groupOverride: icpGroup });
     } catch (err) {
       log(`ERROR: ${(err as Error).message}`);
     } finally {
@@ -929,17 +1311,258 @@ export default function App() {
 
   const startSimulation = async () => {
     const activeProduct = products.find((p) => p.id === selectedProductId);
-    if (!activeProduct) return;
+    if (!activeProduct) {
+      return;
+    }
     const activePersonas =
       icpPersonas.length > 0
         ? icpPersonas
         : (selectedGroup?.personaIds
             .map((id) => personas.find((p) => p.id === id))
             .filter(Boolean) as PersonaState[]) ?? [];
-    if (activePersonas.length === 0) return;
+    if (activePersonas.length === 0) {
+      pushSystemMessage('Select or generate at least one spark before starting a simulation.');
+      return;
+    }
+    const icpGroup = groups.find((group) => group.id === 'icp-auto-group');
+    const groupOverride = icpPersonas.length > 0 ? icpGroup ?? selectedGroup : selectedGroup;
     setMessages([]);
     setMetrics([]);
-    await runSimulationWithPersonas(activePersonas, activeProduct);
+    await runSimulationWithPersonas(activePersonas, activeProduct, groupOverride ? { groupOverride } : undefined);
+  };
+
+  const appendBatchSystemMessage = (senderName: string, text: string) => {
+    setBatchMessages((current) =>
+      upsertMessages(
+        current,
+        createMessage({
+          senderId: 'system',
+          senderName,
+          text,
+          isSystem: true,
+        }),
+      ),
+    );
+  };
+
+  const toggleBatchGroupSelection = (groupId: string) => {
+    setBatchDraft((current) => {
+      const selected = current.selectedGroupIds.includes(groupId);
+      const nextSelectedGroupIds = selected
+        ? current.selectedGroupIds.filter((id) => id !== groupId)
+        : [...current.selectedGroupIds, groupId];
+
+      return {
+        ...current,
+        selectedGroupIds: nextSelectedGroupIds,
+      };
+    });
+  };
+
+  const startBatchRun = async () => {
+    if (!health?.configured) {
+      appendBatchSystemMessage('BATCH_ERROR', 'MINDS_API_KEY is missing. Configure the server before batch runs.');
+      setActiveTab('settings');
+      return;
+    }
+
+    if (!selectedProduct) {
+      appendBatchSystemMessage('BATCH_ERROR', 'Select a product before starting a batch run.');
+      return;
+    }
+
+    const chosenGroups = batchDraft.selectedGroupIds
+      .map((groupId) => groups.find((group) => group.id === groupId))
+      .filter(Boolean) as Group[];
+
+    if (chosenGroups.length === 0) {
+      appendBatchSystemMessage('BATCH_ERROR', 'Select at least one saved group for the batch run.');
+      return;
+    }
+
+    const invalidGroup = chosenGroups.find(
+      (group) => group.personaIds.length === 0 || group.personaIds.length > maxPanelMinds,
+    );
+    if (invalidGroup) {
+      appendBatchSystemMessage(
+        'BATCH_ERROR',
+        `Group "${invalidGroup.name}" is not valid for batch execution.`,
+      );
+      setActiveTab('groups');
+      return;
+    }
+
+    const controller = new AbortController();
+    batchAbortRef.current = controller;
+    setIsBatchRunning(true);
+    setBatchStartedAt(new Date().toISOString());
+    setBatchElapsedMs(0);
+    setBatchPhase('baseline');
+    setBatchCompletedGroups(0);
+    setBatchFailedGroups(0);
+    setBatchProgress(createBatchProgress(chosenGroups));
+    setBatchMessages([
+      createMessage({
+        senderId: 'system',
+        senderName: 'BATCH_INIT',
+        text: `INITIALIZING BATCH RUN\nPRODUCT: ${selectedProduct.name}\nGROUPS: ${chosenGroups.length}\nCONCURRENCY: ${batchDraft.concurrency}`,
+        isSystem: true,
+      }),
+    ]);
+    setActiveTab('batch-runs');
+
+    try {
+      const syncedPersonas = await syncPersonas(personas);
+      const syncedGroups = await syncGroups(groups, syncedPersonas);
+      const runGroups = batchDraft.selectedGroupIds
+        .map((groupId) => syncedGroups.find((group) => group.id === groupId))
+        .filter(Boolean) as Group[];
+
+      const runConfig = {
+        id: `batch-${Date.now()}`,
+        name: `${selectedProduct.name} / ${new Date().toLocaleTimeString()}`,
+        productId: selectedProduct.id,
+        groupIds: runGroups.map((group) => group.id),
+        concurrency: batchDraft.concurrency,
+        relayMode: 'global_consensus' as const,
+        createdAt: new Date().toISOString(),
+      };
+
+      const response = await fetch('/api/simulations/batch-run', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+        },
+        body: JSON.stringify({
+          config: runConfig,
+          product: selectedProduct,
+          groups: runGroups,
+          personas: syncedPersonas.map((persona) => ({
+            id: persona.id,
+            name: persona.name,
+            remote: persona.remote,
+          })),
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || `Batch run failed with status ${response.status}`);
+      }
+
+      await readStreamEvents<BatchRunStreamEvent>(response, (event) => {
+        if (event.type === 'batch_status') {
+          setBatchPhase(event.phase);
+          setBatchCompletedGroups(event.completedGroups);
+          setBatchFailedGroups((current) => current);
+          return;
+        }
+
+        if (event.type === 'group_started') {
+          setBatchProgress((current) =>
+            updateBatchProgressItem(current, event.groupId, {
+              status: event.phase === 'baseline' ? 'baseline_running' : 'relay_running',
+              errorMessage: undefined,
+            }),
+          );
+          appendBatchSystemMessage(
+            'BATCH_GROUP',
+            `${event.groupName} -> ${event.phase === 'baseline' ? 'baseline started' : 'relay started'}`,
+          );
+          return;
+        }
+
+        if (event.type === 'group_message') {
+          setBatchMessages((current) =>
+            upsertMessages(
+              current,
+              createMessage({
+                senderId: event.mindId,
+                senderName: `${event.groupName} / ${event.mindName}`,
+                text: event.text,
+              }),
+            ),
+          );
+          return;
+        }
+
+        if (event.type === 'group_analysis') {
+          setBatchProgress((current) =>
+            updateBatchProgressItem(current, event.groupId, {
+              status: event.phase === 'baseline' ? 'baseline_analyzed' : 'relay_analyzed',
+            }),
+          );
+          appendBatchSystemMessage(
+            'BATCH_ANALYSIS',
+            `${event.groupName} -> ${event.phase} summary ready (${event.analysis.purchaseIntent})`,
+          );
+          return;
+        }
+
+        if (event.type === 'consensus_ready') {
+          appendBatchSystemMessage('BATCH_CONSENSUS', event.consensus.executiveSummary);
+          return;
+        }
+
+        if (event.type === 'system') {
+          appendBatchSystemMessage('BATCH_SYSTEM', event.text);
+          return;
+        }
+
+        if (event.type === 'error') {
+          if (event.groupId) {
+            setBatchProgress((current) =>
+              updateBatchProgressItem(current, event.groupId, {
+                status: 'failed',
+                errorMessage: event.message,
+              }),
+            );
+          }
+          setBatchFailedGroups((current) => current + 1);
+          appendBatchSystemMessage('BATCH_ERROR', event.message);
+          return;
+        }
+
+        if (event.type === 'batch_completed') {
+          const relayCompletedIds = new Set(event.run.relayResults.map((result) => result.groupId));
+          const baselineCompletedIds = new Set(event.run.baselineResults.map((result) => result.groupId));
+          setBatchProgress((current) =>
+            current.map((item) => {
+              if (item.status === 'failed') {
+                return item;
+              }
+
+              if (relayCompletedIds.has(item.groupId)) {
+                return { ...item, status: 'completed' };
+              }
+
+              if (baselineCompletedIds.has(item.groupId)) {
+                return { ...item, status: 'baseline_analyzed' };
+              }
+
+              return item;
+            }),
+          );
+          setBatchRuns((current) => [event.run, ...current.filter((run) => run.id !== event.run.id)].slice(0, 12));
+          setSelectedBatchRunId(event.run.id);
+          setVisualizationSource('batch');
+          setSelectedVisualizationPhase('baseline');
+          setSelectedGroupId(event.run.groupIds[0] ?? selectedGroupId);
+          setBatchFailedGroups(event.run.failedGroups.length);
+          setBatchPhase('complete');
+          return;
+        }
+      });
+    } catch (error) {
+      if ((error as Error).name !== 'AbortError') {
+        appendBatchSystemMessage('BATCH_ERROR', `Batch run failed: ${formatError(error)}`);
+      }
+    } finally {
+      batchAbortRef.current = null;
+      setIsBatchRunning(false);
+    }
   };
 
   const renderSimulationTab = () => {
@@ -1107,6 +1730,209 @@ export default function App() {
     );
   };
 
+  const renderBatchRunsTab = () => {
+    const validGroups = groups.filter(
+      (group) => group.personaIds.length > 0 && group.personaIds.length <= maxPanelMinds,
+    );
+    const invalidGroups = new Set(
+      groups
+        .filter((group) => group.personaIds.length === 0 || group.personaIds.length > maxPanelMinds)
+        .map((group) => group.id),
+    );
+
+    return (
+      <>
+        <div className="w-72 border-r border-[#1e1e1e] flex flex-col bg-[#111111]">
+          <div className="p-4 border-b border-[#1e1e1e] flex flex-col gap-4">
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-[#f5f500] uppercase tracking-wider">Active Product</label>
+              <select
+                className="bg-[#1e1e1e] border-none p-2 text-[#ffffff] focus:outline-none focus:ring-1 focus:ring-[#f5f500] rounded-none text-sm"
+                value={selectedProductId}
+                onChange={(event) => setSelectedProductId(event.target.value)}
+                disabled={isBatchRunning}
+              >
+                {products.map((product) => (
+                  <option key={product.id} value={product.id}>
+                    {product.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-[#f5f500] uppercase tracking-wider">Concurrency</label>
+              <input
+                type="number"
+                min={1}
+                max={10}
+                value={batchDraft.concurrency}
+                disabled={isBatchRunning}
+                onChange={(event) =>
+                  setBatchDraft((current) => ({
+                    ...current,
+                    concurrency: Math.max(1, Math.min(10, Number(event.target.value) || 4)),
+                  }))
+                }
+                className="bg-[#1e1e1e] border-none p-2 text-[#ffffff] focus:outline-none focus:ring-1 focus:ring-[#22c55e] rounded-none text-sm"
+              />
+            </div>
+
+            <div className="text-[10px] text-[#444444] space-y-1">
+              <div>Workflow: baseline batch + global summary relay</div>
+              <div>Selected groups: {batchDraft.selectedGroupIds.length}</div>
+              <div>Valid groups: {validGroups.length}</div>
+            </div>
+
+            {!isBatchRunning ? (
+              <button
+                onClick={startBatchRun}
+                className="w-full bg-[#22c55e] text-[#111111] hover:bg-[#22c55e]/80 p-2 font-bold flex items-center justify-center gap-2 transition-colors rounded-none"
+              >
+                <Play className="w-4 h-4" />
+                START BATCH RUN
+              </button>
+            ) : (
+              <button
+                onClick={stopBatchRun}
+                className="w-full bg-[#ef4444] text-[#ffffff] hover:bg-[#ef4444]/80 p-2 font-bold flex items-center justify-center gap-2 transition-colors rounded-none"
+              >
+                <Square className="w-4 h-4" />
+                ABORT BATCH
+              </button>
+            )}
+          </div>
+
+          <div className="p-4 border-b border-[#1e1e1e]">
+            <h3 className="text-xs text-[#f5f500] uppercase tracking-wider mb-3">Saved Groups</h3>
+            <div className="space-y-2 max-h-72 overflow-y-auto custom-scrollbar pr-1">
+              {groups.map((group) => {
+                const selected = batchDraft.selectedGroupIds.includes(group.id);
+                const invalid = invalidGroups.has(group.id);
+                return (
+                  <label
+                    key={group.id}
+                    className={`flex items-start gap-3 p-3 border rounded-none ${
+                      invalid
+                        ? 'opacity-50 cursor-not-allowed border-[#1e1e1e] bg-[#161616]'
+                        : selected
+                          ? 'cursor-pointer border-[#22c55e] bg-[#22c55e]/10'
+                          : 'cursor-pointer border-transparent hover:bg-[#1e1e1e]'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      disabled={isBatchRunning || invalid}
+                      onChange={() => toggleBatchGroupSelection(group.id)}
+                      className="mt-1 accent-[#22c55e]"
+                    />
+                    <div className="min-w-0">
+                      <div className="text-sm text-[#ffffff] truncate">{group.name}</div>
+                      <div className={`text-[10px] mt-1 ${invalid ? 'text-[#ef4444]' : 'text-[#444444]'}`}>
+                        {group.personaIds.length === 0
+                          ? 'Empty group'
+                          : group.personaIds.length > maxPanelMinds
+                            ? `Exceeds ${maxPanelMinds} minds`
+                            : `${group.personaIds.length} minds ready`}
+                      </div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="p-4 flex-1 overflow-y-auto custom-scrollbar">
+            <h3 className="text-xs text-[#f5f500] uppercase tracking-wider mb-3">Batch Progress</h3>
+            <div className="space-y-2">
+              {batchProgress.length === 0 ? (
+                <div className="text-sm text-[#444444]">No batch execution started yet.</div>
+              ) : (
+                batchProgress.map((item) => (
+                  <div key={item.groupId} className="rounded-none border border-[#1e1e1e] bg-[#1a1a1a] p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-sm text-[#ffffff] truncate">{item.groupName}</div>
+                      <div className={`text-[10px] uppercase tracking-wider ${getBatchStatusColor(item.status)}`}>
+                        {getBatchStatusLabel(item.status)}
+                      </div>
+                    </div>
+                    {item.errorMessage ? (
+                      <div className="text-[10px] text-[#ef4444] mt-2">{item.errorMessage}</div>
+                    ) : null}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex-1 flex flex-col bg-[#111111] overflow-hidden">
+          <div className="grid grid-cols-4 border-b border-[#1e1e1e] bg-[#0d0d0d] text-xs">
+            <div className="p-4 border-r border-[#1e1e1e]">
+              <div className="text-[#f5f500] uppercase tracking-wider">Phase</div>
+              <div className="text-[#ffffff] mt-1">{batchPhase}</div>
+            </div>
+            <div className="p-4 border-r border-[#1e1e1e]">
+              <div className="text-[#f5f500] uppercase tracking-wider">Completed</div>
+              <div className="text-[#ffffff] mt-1">{batchCompletedGroups}</div>
+            </div>
+            <div className="p-4 border-r border-[#1e1e1e]">
+              <div className="text-[#f5f500] uppercase tracking-wider">Failed</div>
+              <div className="text-[#ffffff] mt-1">{batchFailedGroups}</div>
+            </div>
+            <div className="p-4">
+              <div className="text-[#f5f500] uppercase tracking-wider">Elapsed</div>
+              <div className="text-[#ffffff] mt-1">{Math.floor(batchElapsedMs / 1000)}s</div>
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar" ref={batchTerminalRef}>
+            {batchMessages.length === 0 && !isBatchRunning ? (
+              <div className="h-full flex flex-col items-center justify-center gap-3">
+                <div className="w-10 h-10 border-2 border-[#1e1e1e] flex items-center justify-center">
+                  <span className="text-[#f5f500] text-xl leading-none animate-pulse">{'>'}</span>
+                </div>
+                <div className="text-[10px] font-bold tracking-[0.18em] text-[#444444] uppercase">
+                  Ready for batch input
+                </div>
+              </div>
+            ) : null}
+
+            {batchMessages.map((message) => (
+              <div key={message.id} className={`flex flex-col ${message.isSystem ? 'opacity-90' : ''}`}>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className={`text-[10px] font-bold tracking-[0.12em] uppercase ${message.isSystem ? 'text-[#f5f500]' : 'text-[#00e5ff]'}`}>
+                    {message.senderName}
+                  </span>
+                  <span className="text-[9px] text-[#444444] tracking-wider">
+                    {new Date(message.createdAt).toLocaleTimeString()}
+                  </span>
+                </div>
+                <div
+                  className={`p-3 rounded-none border-l-2 ${
+                    message.isSystem
+                      ? 'bg-[#f5f500]/10 text-[#f5f500] border-[#f5f500] whitespace-pre-wrap'
+                      : 'bg-[#1e1e1e] text-[#ffffff] border-[#00e5ff]'
+                  }`}
+                >
+                  <span className={message.isSystem ? '' : 'text-[#ffffff]'}>{message.text}</span>
+                </div>
+              </div>
+            ))}
+
+            {isBatchRunning ? (
+              <div className="flex items-center gap-2 text-sm text-[#00e5ff] mt-4">
+                <span className="animate-pulse">[]</span>
+                Streaming multi-group relay output...
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </>
+    );
+  };
+
   const renderProductsTab = () => {
     const activeProduct = products.find((product) => product.id === selectedProductId) ?? products[0];
 
@@ -1238,7 +2064,7 @@ export default function App() {
           {icpPersonas.length > 0 && (
             <div className="text-xs text-emerald-400 border border-emerald-400/30 bg-emerald-400/5 p-3 rounded-none">
               ✓ Showing {icpPersonas.length} data-driven personas from last real data run.
-              Hardcoded personas will return on page reload.
+              Their names, prompts, and roles are synthesized from the scraped dataset and persisted locally.
             </div>
           )}
           {selectedPersona && (
@@ -1329,7 +2155,7 @@ export default function App() {
                   </div>
                 </div>
                 <div className="text-[10px] text-[#444444] mt-1 truncate">
-                  {group.remotePanelId ? `Group ${group.remotePanelId.slice(0, 8)}...` : 'Pending group sync'}
+                  {group.remoteGroupId ? `Group ${group.remoteGroupId.slice(0, 8)}...` : 'Pending group sync'}
                 </div>
               </div>
             ))}
@@ -1450,13 +2276,13 @@ export default function App() {
                   <div className="bg-[#1e1e1e] rounded-none p-3">
                     <div className="text-[#f5f500] uppercase tracking-wider mb-1">Remote Group</div>
                     <div className="text-[#ffffff] break-all">
-                      {editorGroup.remotePanelId ?? 'Pending sync'}
+                      {editorGroup.remoteGroupId ?? 'Pending sync'}
                     </div>
                   </div>
                   <div className="bg-[#1e1e1e] rounded-none p-3">
                     <div className="text-[#f5f500] uppercase tracking-wider mb-1">Fingerprint</div>
                     <div className="text-[#ffffff] break-all">
-                      {editorGroup.remoteFingerprint ?? 'Pending sync'}
+                      {editorGroup.remoteGroupFingerprint ?? 'Pending sync'}
                     </div>
                   </div>
                   <div className="bg-[#1e1e1e] rounded-none p-3">
@@ -1477,7 +2303,467 @@ export default function App() {
   };
 
   const renderVisualizationTab = () => {
-    if (metrics.length === 0) {
+    if (visualizationSource === 'batch' && batchRuns.length === 0) {
+      return (
+        <div className="flex-1 flex flex-col items-center justify-center text-[#6272a4] gap-4">
+          <div className="text-4xl">[]</div>
+          <div>[ NO SAVED BATCH RUNS ]</div>
+        </div>
+      );
+    }
+
+    const activePhase =
+      visualizationSource === 'batch' ? selectedVisualizationPhase : ('baseline' as VisualizationPhase);
+    const phaseResults =
+      visualizationSource === 'batch' && selectedBatchRun ? getPhaseResults(selectedBatchRun, activePhase) : [];
+    const resolvedVisualizationGroupId =
+      visualizationSource === 'batch' && activePhase !== 'aggregate'
+        ? phaseResults.some((result) => result.groupId === selectedGroupId)
+          ? selectedGroupId
+          : phaseResults[0]?.groupId ?? null
+        : selectedGroupId;
+    const activeMetrics = getVisualizationMetrics(
+      visualizationSource,
+      selectedBatchRun,
+      activePhase,
+      resolvedVisualizationGroupId,
+      metrics,
+    );
+    const activeMessages = getVisualizationMessages(
+      visualizationSource,
+      selectedBatchRun,
+      activePhase,
+      resolvedVisualizationGroupId,
+      messages,
+    );
+    const selectedMetric = selectedVisPersona
+      ? activeMetrics.find((metric) => metric.id.toLowerCase() === selectedVisPersona.toLowerCase())
+      : null;
+    const selectedPersona = selectedVisPersona
+      ? personas.find((persona) => persona.id === selectedVisPersona)
+      : null;
+    const personaMessages = selectedVisPersona
+      ? activeMessages.filter((message) => message.senderId === selectedVisPersona)
+      : [];
+    const selectedPhaseResult =
+      visualizationSource === 'batch' && resolvedVisualizationGroupId && activePhase !== 'aggregate'
+        ? phaseResults.find((result) => result.groupId === resolvedVisualizationGroupId) ?? null
+        : null;
+    const selectedBatchGroup =
+      visualizationSource === 'batch' && resolvedVisualizationGroupId
+        ? groups.find((group) => group.id === resolvedVisualizationGroupId) ?? null
+        : null;
+
+    if (visualizationSource === 'batch' && activePhase === 'aggregate') {
+      const aggregate = selectedBatchRun?.finalAggregate;
+      if (!aggregate) {
+        return (
+          <div className="flex-1 flex flex-col items-center justify-center gap-4 bg-[#111111]">
+            <div className="w-14 h-14 border-2 border-[#1e1e1e] flex items-center justify-center">
+              <span className="text-[#f5f500] text-2xl leading-none animate-pulse">{'>'}</span>
+            </div>
+            <div className="text-[11px] font-bold tracking-[0.18em] text-[#444444] uppercase">
+              Aggregate report not available
+            </div>
+          </div>
+        );
+      }
+
+      const comparisonCount = aggregate.groupComparisons.length;
+      const aggregateAvgSentiment = comparisonCount
+        ? Math.round(
+            aggregate.groupComparisons.reduce((sum, comparison) => sum + comparison.averageSentiment, 0) /
+              comparisonCount,
+          )
+        : 0;
+      const aggregateAvgPersuasion = comparisonCount
+        ? Math.round(
+            aggregate.groupComparisons.reduce((sum, comparison) => sum + comparison.averagePersuasion, 0) /
+              comparisonCount,
+          )
+        : 0;
+      const aggregateAvgPassion = comparisonCount
+        ? Math.round(
+            aggregate.groupComparisons.reduce((sum, comparison) => sum + comparison.averagePassion, 0) /
+              comparisonCount,
+          )
+        : 0;
+      const highIntentCount = aggregate.groupComparisons.filter((comparison) => comparison.purchaseIntent === 'high')
+        .length;
+      const mixedIntentCount = aggregate.groupComparisons.filter((comparison) => comparison.purchaseIntent === 'mixed')
+        .length;
+      const lowIntentCount = aggregate.groupComparisons.filter((comparison) => comparison.purchaseIntent === 'low')
+        .length;
+      const aggregateSignal =
+        aggregateAvgSentiment > 20
+          ? 'POSITIVE CONSENSUS'
+          : aggregateAvgSentiment < -20
+            ? 'NEGATIVE CONSENSUS'
+            : 'CAUTIOUS CONSENSUS';
+      const aggregateSignalTone: 'ok' | 'warn' | 'danger' =
+        aggregateAvgSentiment > 20 ? 'ok' : aggregateAvgSentiment < -20 ? 'danger' : 'warn';
+      const aggregateChartData = aggregate.groupComparisons.map((comparison) => ({
+        groupName: comparison.groupName,
+        sentiment: comparison.averageSentiment,
+        persuasion: comparison.averagePersuasion,
+        passion: comparison.averagePassion,
+        purchaseIntent: comparison.purchaseIntent,
+      }));
+      const aggregateChartHeight = Math.max(280, aggregateChartData.length * 78);
+      const aggregatePanelClass = 'border border-[#1e1e1e] bg-[#0d0d0d] p-5';
+      const aggregateLabelClass = 'text-[10px] font-bold tracking-[0.18em] text-[#f5f500] uppercase mb-4';
+      const aggregateItemClass = 'border border-[#1e1e1e] bg-[#111111] p-3';
+      const intentChipClass = (intent: 'low' | 'mixed' | 'high') =>
+        intent === 'high'
+          ? 'border-[#1c3b20] bg-[#102112] text-[#7dff94]'
+          : intent === 'mixed'
+            ? 'border-[#3a3717] bg-[#17150b] text-[#f5f500]'
+            : 'border-[#3a1b1b] bg-[#1a0f0f] text-[#ff8f8f]';
+
+      return (
+        <div className="flex-1 flex flex-col overflow-hidden bg-[#111111]">
+          <div className="grid grid-cols-4 gap-[2px] bg-[#1e1e1e] border-b border-[#1e1e1e]">
+            <KpiCard
+              variant="hero"
+              eyebrow="Aggregate Sentiment"
+              value={aggregateAvgSentiment}
+              delta={aggregateSignal}
+              deltaTone={aggregateSignalTone}
+            />
+            <KpiCard
+              eyebrow="Group Coverage"
+              value={comparisonCount}
+              delta={`${highIntentCount} high / ${mixedIntentCount} mixed / ${lowIntentCount} low`}
+              deltaTone="muted"
+            />
+            <KpiCard
+              eyebrow="Avg Persuasion"
+              value={aggregateAvgPersuasion}
+              delta={`${aggregate.topAppeals.length} appeals surfaced`}
+              deltaTone={aggregate.topAppeals.length > 0 ? 'ok' : 'muted'}
+            />
+            <KpiCard
+              eyebrow="Avg Passion"
+              value={aggregateAvgPassion}
+              delta={
+                aggregate.failedGroups.length > 0
+                  ? `${aggregate.failedGroups.length} failures in aggregate`
+                  : 'No failed groups'
+              }
+              deltaTone={aggregate.failedGroups.length > 0 ? 'danger' : 'muted'}
+            />
+          </div>
+
+          <div className="border-b border-[#1e1e1e] bg-[#111111] p-8 pb-6">
+            <div className="flex flex-wrap justify-between items-end gap-4">
+              <div className="flex flex-wrap gap-4 items-end">
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-[#f5f500] uppercase tracking-wider">Result Source</label>
+                  <select
+                    className="bg-[#1e1e1e] border-none p-2 text-[#ffffff] rounded-none text-sm"
+                    value={visualizationSource}
+                    onChange={(event) => setVisualizationSource(event.target.value as VisualizationSource)}
+                  >
+                    <option value="single">Single Run</option>
+                    <option value="batch">Batch Run</option>
+                  </select>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-[#f5f500] uppercase tracking-wider">Saved Batch Run</label>
+                  <select
+                    className="bg-[#1e1e1e] border-none p-2 text-[#ffffff] rounded-none text-sm min-w-64"
+                    value={selectedBatchRun?.id ?? ''}
+                    onChange={(event) => setSelectedBatchRunId(event.target.value)}
+                  >
+                    {batchRuns.map((run) => (
+                      <option key={run.id} value={run.id}>
+                        {run.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-[#f5f500] uppercase tracking-wider">Phase</label>
+                  <select
+                    className="bg-[#1e1e1e] border-none p-2 text-[#ffffff] rounded-none text-sm"
+                    value={selectedVisualizationPhase}
+                    onChange={(event) => setSelectedVisualizationPhase(event.target.value as VisualizationPhase)}
+                  >
+                    <option value="baseline">Baseline</option>
+                    <option value="relay">Relay</option>
+                    <option value="aggregate">Aggregate</option>
+                  </select>
+                </div>
+              </div>
+              <div className="border border-[#1e1e1e] bg-[#0d0d0d] px-4 py-4 min-w-[280px] max-w-[440px]">
+                <div className="text-[10px] font-bold tracking-[0.18em] text-[#444444] uppercase mb-3">
+                  Aggregate Read
+                </div>
+                <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs text-[#b8b8b8]">
+                  <div>Product</div>
+                  <div className="text-right text-white">{selectedBatchRun?.product.name ?? 'Unknown'}</div>
+                  <div>Groups analyzed</div>
+                  <div className="text-right text-white">{comparisonCount}</div>
+                  <div>Buyer-ready panels</div>
+                  <div className="text-right text-white">{highIntentCount}</div>
+                  <div>Primary objection</div>
+                  <div className="text-right text-white">{aggregate.topObjections[0] ?? 'None'}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto custom-scrollbar p-8 space-y-6 bg-[#111111]">
+            <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-6">
+              <div className={aggregatePanelClass}>
+                <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+                  <div>
+                    <div className={aggregateLabelClass}>Consensus Map</div>
+                    <div className="text-xs text-[#666666]">
+                      Sentiment spans resistance to conviction. Persuasion and passion show conversion strength.
+                    </div>
+                  </div>
+                  <div className="text-[10px] font-bold tracking-[0.18em] text-[#444444] uppercase">
+                    {comparisonCount} group averages
+                  </div>
+                </div>
+
+                {aggregateChartData.length > 0 ? (
+                  <div style={{ height: aggregateChartHeight }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart
+                        data={aggregateChartData}
+                        layout="vertical"
+                        margin={{ top: 8, right: 20, left: 20, bottom: 8 }}
+                        barCategoryGap={16}
+                      >
+                        <CartesianGrid stroke="#1e1e1e" horizontal={true} vertical={false} />
+                        <XAxis
+                          type="number"
+                          domain={[-100, 100]}
+                          tick={{ fill: '#666666', fontSize: 11 }}
+                          axisLine={{ stroke: '#1e1e1e' }}
+                          tickLine={{ stroke: '#1e1e1e' }}
+                        />
+                        <YAxis
+                          type="category"
+                          dataKey="groupName"
+                          width={140}
+                          tick={{ fill: '#d4d4d4', fontSize: 12 }}
+                          axisLine={false}
+                          tickLine={false}
+                        />
+                        <Tooltip
+                          cursor={{ fill: 'rgba(245, 245, 0, 0.04)' }}
+                          contentStyle={{
+                            backgroundColor: '#111111',
+                            border: '1px solid #1e1e1e',
+                            borderRadius: 0,
+                            color: '#ffffff',
+                          }}
+                          labelStyle={{ color: '#f5f500', fontWeight: 700, marginBottom: 4 }}
+                          formatter={(value: number, name: string) => {
+                            const label =
+                              name === 'sentiment'
+                                ? 'Sentiment'
+                                : name === 'persuasion'
+                                  ? 'Persuasion'
+                                  : 'Passion';
+                            return [value, label];
+                          }}
+                        />
+                        <Legend
+                          wrapperStyle={{ color: '#666666', fontSize: '11px', paddingTop: '8px' }}
+                          formatter={(value: string) =>
+                            value === 'sentiment'
+                              ? 'Sentiment'
+                              : value === 'persuasion'
+                                ? 'Persuasion'
+                                : 'Passion'
+                          }
+                        />
+                        <ReferenceLine x={0} stroke="#444444" />
+                        <Bar dataKey="sentiment" fill="#f5f500" maxBarSize={14} />
+                        <Bar dataKey="persuasion" fill="#5cc8d6" maxBarSize={14} />
+                        <Bar dataKey="passion" fill="#7dff94" maxBarSize={14} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <div className="min-h-[280px] flex items-center justify-center text-[11px] font-bold tracking-[0.18em] text-[#444444] uppercase">
+                    No aggregate comparison data
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-6">
+                <div className={aggregatePanelClass}>
+                  <div className={aggregateLabelClass}>Intent Breakdown</div>
+                  <div className="grid grid-cols-3 gap-[2px] bg-[#1e1e1e]">
+                    <div className="bg-[#111111] px-3 py-4">
+                      <div className="text-[10px] font-bold tracking-[0.18em] text-[#444444] uppercase mb-2">High</div>
+                      <div className="text-[28px] font-black leading-none text-[#7dff94]">{highIntentCount}</div>
+                    </div>
+                    <div className="bg-[#111111] px-3 py-4">
+                      <div className="text-[10px] font-bold tracking-[0.18em] text-[#444444] uppercase mb-2">Mixed</div>
+                      <div className="text-[28px] font-black leading-none text-[#f5f500]">{mixedIntentCount}</div>
+                    </div>
+                    <div className="bg-[#111111] px-3 py-4">
+                      <div className="text-[10px] font-bold tracking-[0.18em] text-[#444444] uppercase mb-2">Low</div>
+                      <div className="text-[28px] font-black leading-none text-[#ff8f8f]">{lowIntentCount}</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className={aggregatePanelClass}>
+                  <div className={aggregateLabelClass}>Lead Shift</div>
+                  <div className="text-sm text-[#d4d4d4] leading-6">
+                    {aggregate.consensusShifts[0] ?? 'No major shift signals recorded.'}
+                  </div>
+                </div>
+
+                <div className={aggregatePanelClass}>
+                  <div className={aggregateLabelClass}>Primary Objection</div>
+                  <div className="text-sm text-[#ff8f8f] leading-6">
+                    {aggregate.topObjections[0] ?? 'No dominant objection recorded.'}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+              <div className={`xl:col-span-2 ${aggregatePanelClass}`}>
+                <div className={aggregateLabelClass}>Batch Summary</div>
+                <div className="text-sm text-[#d4d4d4] leading-7 whitespace-pre-wrap">{aggregate.summary}</div>
+              </div>
+              <div className={aggregatePanelClass}>
+                <div className={aggregateLabelClass}>Consensus Shifts</div>
+                <div className="space-y-3">
+                  {aggregate.consensusShifts.length > 0 ? (
+                    aggregate.consensusShifts.map((shift) => (
+                      <div key={shift} className={`${aggregateItemClass} text-sm text-[#d4d4d4] leading-6`}>
+                        {shift}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-sm text-[#666666]">No major shift signals recorded.</div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className={aggregatePanelClass}>
+                <div className={aggregateLabelClass}>Top Appeals</div>
+                <div className="space-y-3">
+                  {aggregate.topAppeals.length > 0 ? (
+                    aggregate.topAppeals.map((appeal) => (
+                      <div key={appeal} className={`${aggregateItemClass} text-sm text-[#7dff94] leading-6`}>
+                        {appeal}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-sm text-[#666666]">No durable appeals survived aggregate review.</div>
+                  )}
+                </div>
+              </div>
+              <div className={aggregatePanelClass}>
+                <div className={aggregateLabelClass}>Top Objections</div>
+                <div className="space-y-3">
+                  {aggregate.topObjections.length > 0 ? (
+                    aggregate.topObjections.map((objection) => (
+                      <div key={objection} className={`${aggregateItemClass} text-sm text-[#ff8f8f] leading-6`}>
+                        {objection}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-sm text-[#666666]">No consistent objections recorded.</div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className={aggregatePanelClass}>
+                <div className={aggregateLabelClass}>Average Persona Metrics</div>
+                <div className="space-y-3">
+                  {aggregate.averagePersonaMetrics.map((entry) => {
+                    const persona = personas.find((item) => item.id === entry.id);
+                    return (
+                      <div key={entry.id} className={aggregateItemClass}>
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="text-sm text-white">{persona?.name ?? entry.id}</div>
+                          <div className="text-[10px] font-bold tracking-[0.18em] text-[#444444] uppercase">
+                            persona avg
+                          </div>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-[#b8b8b8]">
+                          <span>Sent {entry.sentiment}</span>
+                          <span>Pers {entry.persuasion}</span>
+                          <span>Pass {entry.passion}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className={aggregatePanelClass}>
+                <div className={aggregateLabelClass}>Failed Groups</div>
+                <div className="space-y-3">
+                  {aggregate.failedGroups.length > 0 ? (
+                    aggregate.failedGroups.map((failedGroup) => (
+                      <div key={failedGroup} className={`${aggregateItemClass} text-sm text-[#ff8f8f] leading-6`}>
+                        {failedGroup}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-sm text-[#666666]">No failed groups in final aggregate.</div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className={aggregatePanelClass}>
+              <div className={aggregateLabelClass}>Group Comparison</div>
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-[#1e1e1e] text-left text-[10px] font-bold tracking-[0.18em] text-[#444444] uppercase">
+                      <th className="pb-3 pr-4">Group</th>
+                      <th className="pb-3 pr-4">Sentiment</th>
+                      <th className="pb-3 pr-4">Persuasion</th>
+                      <th className="pb-3 pr-4">Passion</th>
+                      <th className="pb-3">Intent</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {aggregate.groupComparisons.map((comparison) => (
+                      <tr key={comparison.groupId} className="border-t border-[#1e1e1e] text-[#d4d4d4]">
+                        <td className="py-3 pr-4 text-white">{comparison.groupName}</td>
+                        <td className="py-3 pr-4">{comparison.averageSentiment}</td>
+                        <td className="py-3 pr-4">{comparison.averagePersuasion}</td>
+                        <td className="py-3 pr-4">{comparison.averagePassion}</td>
+                        <td className="py-3">
+                          <span
+                            className={`inline-flex border px-2 py-1 text-[10px] font-bold tracking-[0.18em] uppercase ${intentChipClass(
+                              comparison.purchaseIntent,
+                            )}`}
+                          >
+                            {comparison.purchaseIntent}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (activeMetrics.length === 0) {
       return (
         <div className="flex-1 flex flex-col items-center justify-center gap-4">
           <div className="w-14 h-14 border-2 border-[#1e1e1e] flex items-center justify-center">
@@ -1491,7 +2777,7 @@ export default function App() {
     }
 
     const avg = (key: 'sentiment' | 'persuasion' | 'passion') =>
-      Math.round(metrics.reduce((sum, m) => sum + m[key], 0) / metrics.length);
+      Math.round(activeMetrics.reduce((sum, metric) => sum + metric[key], 0) / activeMetrics.length);
     const avgSentiment = avg('sentiment');
     const avgPersuasion = avg('persuasion');
     const avgPassion = avg('passion');
@@ -1500,29 +2786,14 @@ export default function App() {
     const sentimentTone: 'ok' | 'warn' | 'danger' =
       avgSentiment > 20 ? 'ok' : avgSentiment < -20 ? 'danger' : 'warn';
 
-    const selectedMetric = selectedVisPersona
-      ? metrics.find((metric) => metric.id.toLowerCase() === selectedVisPersona.toLowerCase())
-      : null;
-    const selectedPersona = selectedVisPersona
-      ? personas.find((persona) => persona.id === selectedVisPersona)
-      : null;
-    const personaMessages = selectedVisPersona
-      ? messages.filter((message) => message.senderId === selectedVisPersona)
-      : [];
-
     return (
       <div className="flex-1 flex flex-col overflow-hidden">
         <div className="grid grid-cols-4 gap-[2px] bg-[#1e1e1e] border-b border-[#1e1e1e]">
-          <KpiCard
-            variant="hero"
-            eyebrow="Avg Sentiment"
-            value={avgSentiment}
-            delta={sentimentDelta}
-          />
+          <KpiCard variant="hero" eyebrow="Avg Sentiment" value={avgSentiment} delta={sentimentDelta} />
           <KpiCard
             eyebrow="Avg Persuasion"
             value={avgPersuasion}
-            delta={`${metrics.length} personas scored`}
+            delta={`${activeMetrics.length} personas scored`}
             deltaTone="muted"
           />
           <KpiCard
@@ -1533,14 +2804,76 @@ export default function App() {
           />
           <KpiCard
             eyebrow="Signal"
-            value={metrics.length}
+            value={activeMetrics.length}
             delta={sentimentDelta}
             deltaTone={sentimentTone}
           />
         </div>
         <div className="flex-1 border-b border-[#1e1e1e] relative flex flex-col bg-[#111111] overflow-hidden p-8">
-          <div className="flex justify-between items-center mb-4 z-10">
-            <h3 className="text-sm font-bold text-[#f5f500] tracking-widest">MULTI-DIMENSIONAL ANALYSIS</h3>
+          <div className="flex flex-wrap justify-between items-end gap-4 mb-4 z-10">
+            <div className="flex flex-wrap gap-4 items-end">
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-[#f5f500] uppercase tracking-wider">Result Source</label>
+                <select
+                  className="bg-[#1e1e1e] border-none p-2 text-[#ffffff] rounded-none text-sm"
+                  value={visualizationSource}
+                  onChange={(event) => setVisualizationSource(event.target.value as VisualizationSource)}
+                >
+                  <option value="single">Single Run</option>
+                  <option value="batch">Batch Run</option>
+                </select>
+              </div>
+
+              {visualizationSource === 'batch' ? (
+                <>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-[#f5f500] uppercase tracking-wider">Saved Batch Run</label>
+                    <select
+                      className="bg-[#1e1e1e] border-none p-2 text-[#ffffff] rounded-none text-sm min-w-64"
+                      value={selectedBatchRun?.id ?? ''}
+                      onChange={(event) => setSelectedBatchRunId(event.target.value)}
+                    >
+                      {batchRuns.map((run) => (
+                        <option key={run.id} value={run.id}>
+                          {run.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-[#f5f500] uppercase tracking-wider">Phase</label>
+                    <select
+                      className="bg-[#1e1e1e] border-none p-2 text-[#ffffff] rounded-none text-sm"
+                      value={selectedVisualizationPhase}
+                      onChange={(event) => setSelectedVisualizationPhase(event.target.value as VisualizationPhase)}
+                    >
+                      <option value="baseline">Baseline</option>
+                      <option value="relay">Relay</option>
+                      <option value="aggregate">Aggregate</option>
+                    </select>
+                  </div>
+
+                  {activePhase !== 'aggregate' ? (
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-[#f5f500] uppercase tracking-wider">Group</label>
+                      <select
+                        className="bg-[#1e1e1e] border-none p-2 text-[#ffffff] rounded-none text-sm min-w-56"
+                        value={resolvedVisualizationGroupId ?? ''}
+                        onChange={(event) => setSelectedGroupId(event.target.value)}
+                      >
+                        {phaseResults.map((result) => (
+                          <option key={`${result.phase}-${result.groupId}`} value={result.groupId}>
+                            {result.groupName}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
+
             <div className="flex bg-[#1e1e1e] rounded-none overflow-hidden">
               <button
                 className={`px-3 py-1 text-xs font-bold flex items-center gap-2 ${
@@ -1560,6 +2893,15 @@ export default function App() {
                 <Box className="w-3 h-3" />
                 CINEMATIC
               </button>
+            </div>
+          </div>
+
+          <div className="flex justify-between items-center mb-4 z-10">
+            <h3 className="text-sm font-bold text-[#f5f500] tracking-widest">MULTI-DIMENSIONAL ANALYSIS</h3>
+            <div className="text-xs text-[#444444]">
+              {visualizationSource === 'batch'
+                ? `${selectedBatchGroup?.name ?? selectedPhaseResult?.groupName ?? 'Batch Group'} / ${activePhase.toUpperCase()}`
+                : `${selectedGroup?.name ?? 'Single Group'} / SINGLE RUN`}
             </div>
           </div>
 
@@ -1614,7 +2956,7 @@ export default function App() {
                     </div>
                   </div>
 
-                  {metrics.map((metric) => {
+                  {activeMetrics.map((metric) => {
                     const persona = personas.find(
                       (item) => item.id.toLowerCase() === metric.id.toLowerCase(),
                     );
@@ -1766,12 +3108,8 @@ export default function App() {
                   />
                   <ReferenceLine x={0} stroke="#444444" />
                   <ReferenceLine y={50} stroke="#444444" />
-                  <Scatter
-                    name="Personas"
-                    data={metrics}
-                    onClick={(data: Metric) => setSelectedVisPersona(data.id)}
-                  >
-                    {metrics.map((metric, index) => {
+                  <Scatter name="Personas" data={activeMetrics} onClick={(data: Metric) => setSelectedVisPersona(data.id)}>
+                    {activeMetrics.map((metric, index) => {
                       const persona = personas.find(
                         (item) => item.id.toLowerCase() === metric.id.toLowerCase(),
                       );
@@ -1839,6 +3177,12 @@ export default function App() {
                 ) : (
                   <div className="text-[#444444] text-sm italic">No messages recorded for this spark.</div>
                 )}
+                {selectedPhaseResult ? (
+                  <div className="mt-4 bg-[#20222b] border border-[#44475a] rounded-sm p-3 text-xs text-[#c8d0ff]">
+                    <div className="text-[#bd93f9] uppercase tracking-wider mb-2">Phase Summary</div>
+                    <div className="whitespace-pre-wrap">{selectedPhaseResult.analysis.summary}</div>
+                  </div>
+                ) : null}
               </div>
             </>
           ) : (
@@ -1910,7 +3254,7 @@ export default function App() {
             <div className="flex items-center px-4 py-2 border-r border-[#1e1e1e]">
               <Logo />
             </div>
-            {(['simulation', 'products', 'personas', 'groups', 'visualization', 'settings'] as Tab[]).map((tab) => (
+            {(['simulation', 'batch-runs', 'products', 'personas', 'groups', 'visualization', 'settings'] as Tab[]).map((tab) => (
               <div
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -1928,6 +3272,7 @@ export default function App() {
 
           <div className="flex-1 flex overflow-hidden">
             {activeTab === 'simulation' && renderSimulationTab()}
+            {activeTab === 'batch-runs' && renderBatchRunsTab()}
             {activeTab === 'products' && renderProductsTab()}
             {activeTab === 'personas' && renderPersonasTab()}
             {activeTab === 'groups' && renderGroupsTab()}
@@ -1936,14 +3281,16 @@ export default function App() {
           </div>
 
           <div className="flex text-xs font-bold border-t border-[#1e1e1e] bg-[#0a0a0a]">
-            <div className={`px-4 py-1 ${isSimulating ? 'bg-[#ef4444] text-[#ffffff]' : 'bg-[#f5f500] text-[#111111]'}`}>
-              {isSimulating ? 'SIMULATING' : 'STATUS'}
+            <div className={`px-4 py-1 ${isBusy ? 'bg-[#ef4444] text-[#ffffff]' : 'bg-[#f5f500] text-[#111111]'}`}>
+              {isBusy ? 'RUNNING' : 'STATUS'}
             </div>
             <div className="px-4 py-1 bg-[#1e1e1e] text-[#ffffff] flex-1 truncate font-normal">
               {health?.configured
                 ? isSimulating
-                  ? 'Streaming simulation output...'
-                  : 'Ready'
+                  ? 'Streaming single-group output...'
+                  : isBatchRunning
+                    ? 'Streaming batch relay output...'
+                    : 'Ready'
                 : 'Missing MINDS_API_KEY on server'}
             </div>
             <div className="px-4 py-1 bg-[#f5f500] text-[#111111]">UTF-8</div>
