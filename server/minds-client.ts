@@ -209,4 +209,56 @@ export class MindsClient {
       signal,
     });
   }
+
+  async createKeywordsSpark(payload: {
+    name: string;
+    description: string;
+    discipline: string;
+    keywords: string[];
+    tags: string[];
+  }): Promise<RemoteSparkResponse> {
+    const created = await this.request<{ data: RemoteSparkResponse }>('/sparks', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: payload.name,
+        description: payload.description,
+        mode: 'keywords',
+        type: 'user',
+        discipline: payload.discipline,
+        keywords: payload.keywords,
+        tags: payload.tags,
+      }),
+    });
+    return created.data;
+  }
+
+  async uploadKnowledge(
+    sparkId: string,
+    content: Buffer,
+    filename: string,
+    description: string,
+  ): Promise<void> {
+    const FormData = (await import('form-data')).default;
+    const form = new FormData();
+    form.append('file', content, { filename, contentType: 'text/plain' });
+    form.append('description', description);
+
+    const config = getServerConfig();
+    const urls = [config.apiBaseUrl, 'https://getminds.ai/api/v1'];
+
+    for (let i = 0; i < urls.length; i++) {
+      const res = await fetch(`${urls[i]}/sparks/${sparkId}/knowledge`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${config.apiKey}`,
+          ...form.getHeaders(),
+        },
+        body: form.getBuffer(),
+      });
+      if (res.ok) return;
+      const body = await res.json().catch(() => ({}));
+      if (i < urls.length - 1 && this.shouldRetryWithFallback(res.status, body)) continue;
+      throw new MindsApiError(`Knowledge upload failed: ${res.status}`, res.status, body);
+    }
+  }
 }

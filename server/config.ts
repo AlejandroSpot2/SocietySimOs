@@ -4,6 +4,7 @@ export interface ServerConfig {
   maxPanelMinds: number;
   port: number;
   configured: boolean;
+  apifyApiKey: string;
 }
 
 const DEFAULT_API_BASE_URL = 'https://getminds.ai/api/v1';
@@ -23,5 +24,6 @@ export function getServerConfig(): ServerConfig {
     maxPanelMinds: parseNumber(process.env.MINDS_MAX_PANEL_MINDS, DEFAULT_MAX_PANEL_MINDS),
     port: parseNumber(process.env.PORT, DEFAULT_PORT),
     configured: Boolean(apiKey),
+    apifyApiKey: process.env.APIFY_API_KEY?.trim() ?? '',
   };
 }

@@ -3,6 +3,7 @@ export interface Product {
   name: string;
   category: string;
   description: string;
+  icpKeyword?: string;
 }
 
 export interface RemoteSparkRef {
@@ -15,6 +16,7 @@ export interface PersonaState {
   id: string;
   name: string;
   prompt: string;
+  color?: string;
   discipline?: string;
   description?: string;
   tags?: string[];
