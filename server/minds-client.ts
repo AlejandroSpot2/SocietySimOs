@@ -37,6 +37,19 @@ export interface RemoteSparkResponse {
   systemPrompt?: string;
 }
 
+export interface MindsClientLike {
+  createManualSpark(payload: SparkPayload | AnalystPayload): Promise<RemoteSparkResponse>;
+  createAnalystSpark(payload: AnalystPayload): Promise<RemoteSparkResponse>;
+  updateSpark(
+    sparkId: string,
+    payload: SparkPayload | AnalystPayload,
+    type: 'user' | 'expert',
+  ): Promise<RemoteSparkResponse>;
+  createGroup(name: string, sparkIds: string[]): Promise<{ id: string }>;
+  listSparks(search?: string): Promise<RemoteSparkResponse[]>;
+  completeSpark<T>(sparkId: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<T>;
+}
+
 interface RemoteResourceResponse {
   data?: {
     id?: string;
@@ -196,6 +209,21 @@ export class MindsClient {
     }
 
     return { id: groupId };
+  }
+
+  async listSparks(search?: string): Promise<RemoteSparkResponse[]> {
+    const query = new URLSearchParams();
+    if (search?.trim()) {
+      query.set('search', search.trim());
+    }
+    query.set('limit', '100');
+    query.set('offset', '0');
+
+    const result = await this.request<{ data: RemoteSparkResponse[] }>(
+      `/sparks?${query.toString()}`,
+    );
+
+    return Array.isArray(result.data) ? result.data : [];
   }
 
   async completeSpark<T>(
