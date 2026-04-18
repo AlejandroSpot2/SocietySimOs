@@ -7,7 +7,11 @@
       "Bash(npm run *)",
       "Bash(git check-ignore *)",
       "Bash(node -e \"const p=require\\('./node_modules/motion/package.json'\\); console.log\\(Object.keys\\(p.exports\\)\\)\")",
-      "Bash(node -e \"console.log\\(require\\('./node_modules/motion/package.json'\\).version\\)\")"
+      "Bash(node -e \"console.log\\(require\\('./node_modules/motion/package.json'\\).version\\)\")",
+      "Bash(git checkout *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)"
     ]
   }
 }
